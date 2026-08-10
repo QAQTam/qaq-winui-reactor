@@ -28,6 +28,9 @@ pub(super) struct TemplatedListState {
     context: ContextSnapshot,
     selection_callback: Option<Rc<RefCell<Option<Callback<i32>>>>>,
     reorder_callback: Option<Rc<RefCell<Option<Callback<Vec<usize>>>>>>,
+    /// A prepared scroll request whose native template was not ready when
+    /// applied; retried at the end of the next drain pass.
+    pub scroll_pending: bool,
 }
 
 pub(super) struct RealizedRow {
@@ -95,8 +98,23 @@ impl<B: Backend + 'static> Reconciler<B> {
                 context: self.host.context_stack.snapshot(),
                 selection_callback,
                 reorder_callback,
+                scroll_pending: false,
             },
         );
+
+        // DeepX downstream: wire the scroll protocol. Configure must run
+        // before any request so ViewChanged handlers are attached before the
+        // first prepare/apply cycle (upstream #4807 dropped this wiring).
+        self.backend.configure_templated_scroll(
+            id,
+            tl.top_threshold,
+            tl.tail_threshold,
+            tl.on_top_reached.clone(),
+            tl.on_view_changed.clone(),
+        );
+        if let Some(request) = tl.scroll_request {
+            self.backend.prepare_templated_scroll(id, request);
+        }
 
         // WinUI container-recycling events (ContainerContentChanging) fire
         // during scrolling, outside any render pass. The realize/recycle
@@ -138,6 +156,15 @@ impl<B: Backend + 'static> Reconciler<B> {
         let sel = tl.selected_index();
         if sel >= 0 {
             self.backend.set_templated_selected_index(id, sel);
+        }
+
+        // Apply a mount-time scroll request once the item source is set; a
+        // missing native template keeps the request armed for a later pass.
+        if tl.scroll_request.is_some() {
+            let pending = !self.backend.apply_prepared_templated_scroll(id);
+            if let Some(state) = self.tree.templated.lists.get_mut(&id) {
+                state.scroll_pending = pending;
+            }
         }
 
         // FlipView is not a ListViewBase and has no container-recycling
@@ -213,6 +240,27 @@ impl<B: Backend + 'static> Reconciler<B> {
         id: ControlId,
     ) {
         self.diff_modifiers(id, &old.modifiers, &new.modifiers);
+
+        // DeepX downstream: keep the scroll protocol in sync with the element.
+        let scroll_changed = old.scroll_request != new.scroll_request;
+        if old.top_threshold != new.top_threshold
+            || old.tail_threshold != new.tail_threshold
+            || old.on_top_reached != new.on_top_reached
+            || old.on_view_changed != new.on_view_changed
+        {
+            self.backend.configure_templated_scroll(
+                id,
+                new.top_threshold,
+                new.tail_threshold,
+                new.on_top_reached.clone(),
+                new.on_view_changed.clone(),
+            );
+        }
+        if scroll_changed
+            && let Some(request) = new.scroll_request
+        {
+            self.backend.prepare_templated_scroll(id, request);
+        }
 
         if let Some(state) = self.tree.templated.lists.get_mut(&id) {
             state.element = new.clone();
@@ -300,6 +348,17 @@ impl<B: Backend + 'static> Reconciler<B> {
             });
             if has_forced_row {
                 self.refresh_realized_rows(id, new);
+            }
+        }
+
+        // The item source has been updated: apply the prepared request so the
+        // scroll lands on the *new* extent. A not-yet-realized template stays
+        // armed (`scroll_pending`) and is retried by `drain_realizations`.
+        if scroll_changed {
+            let pending =
+                new.scroll_request.is_some() && !self.backend.apply_prepared_templated_scroll(id);
+            if let Some(state) = self.tree.templated.lists.get_mut(&id) {
+                state.scroll_pending = pending;
             }
         }
     }
@@ -535,7 +594,24 @@ impl<B: Backend + 'static> Reconciler<B> {
                 }
             }
             #[cfg(debug_assertions)]
-            self.assert_consistent_inner();
+            self.debug_assert_native_ownership();
+        }
+
+        // DeepX downstream: retry scroll requests whose native template was
+        // not realized at apply time (layout may now be available).
+        let pending: Vec<ControlId> = self
+            .tree
+            .templated
+            .lists
+            .iter()
+            .filter_map(|(id, state)| state.scroll_pending.then_some(*id))
+            .collect();
+        for id in pending {
+            if self.backend.apply_prepared_templated_scroll(id)
+                && let Some(state) = self.tree.templated.lists.get_mut(&id)
+            {
+                state.scroll_pending = false;
+            }
         }
     }
 
@@ -622,7 +698,7 @@ impl<B: Backend + 'static> Reconciler<B> {
     }
 
     fn dispatch_logical_appeared(&mut self, root: LogicalNodeId) {
-        for node in self.tree.logical.collect_subtree(root) {
+        for node in self.collect_logical_subtree(root) {
             self.tree
                 .logical
                 .dispatch_node_appeared(node, &self.host.context_stack);
@@ -630,11 +706,37 @@ impl<B: Backend + 'static> Reconciler<B> {
     }
 
     fn dispatch_logical_disappeared(&mut self, root: LogicalNodeId) {
-        for node in self.tree.logical.collect_subtree(root) {
+        for node in self.collect_logical_subtree(root) {
             self.tree
                 .logical
                 .dispatch_node_disappeared(node, &self.host.context_stack);
         }
+    }
+
+    fn collect_logical_subtree(&self, root: LogicalNodeId) -> Vec<LogicalNodeId> {
+        let mut nodes = vec![root];
+        let mut index = 0;
+        while index < nodes.len() {
+            let parent = nodes[index];
+            index += 1;
+            nodes.extend(
+                self.tree
+                    .logical
+                    .components
+                    .values()
+                    .filter(|node| node.parent == Some(parent))
+                    .map(|node| node.node_id),
+            );
+            nodes.extend(
+                self.tree
+                    .logical
+                    .wrappers
+                    .values()
+                    .filter(|node| node.parent == Some(parent))
+                    .map(|node| node.node_id),
+            );
+        }
+        nodes
     }
 
     fn dispatch_appeared(&mut self, id: ControlId) {

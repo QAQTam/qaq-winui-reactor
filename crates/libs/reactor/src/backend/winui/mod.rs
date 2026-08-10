@@ -126,20 +126,33 @@ define_handles! {
 /// controls and drives them on the WinUI thread.
 pub struct WinUIBackend {
     controls: RefCell<FxHashMap<ControlId, Handle>>,
-    event_revokers: RefCell<FxHashMap<(ControlId, Event), Vec<windows_core::EventRevoker>>>,
+    event_revokers: RefCell<FxHashMap<(ControlId, Event), Vec<EventRevoker>>>,
     property_observers: RefCell<FxHashMap<(ControlId, Event), PropertyObserver>>,
-    templated_selection_revokers: RefCell<FxHashMap<ControlId, windows_core::EventRevoker>>,
+    templated_selection_revokers: RefCell<FxHashMap<ControlId, EventRevoker>>,
     /// Per-list virtualization state for templated ListView/GridView/FlipView.
     templated: RefCell<FxHashMap<ControlId, TemplatedList>>,
     /// Shared ListView/GridView template; its root `ContentControl` can host
     /// reactor elements where `ListViewItemPresenter` would render strings.
     content_template: RefCell<Option<bindings::DataTemplate>>,
+    /// Last committed rich-text paragraphs per RichTextBlock control.
+    /// `set_rich_text_paragraphs` diffs against this snapshot (paragraph
+    /// level + per-paragraph run level) and only touches what changed —
+    /// the reconciler re-runs element builds every frame during streaming,
+    /// and unchanged blocks/runs would otherwise re-layout the whole text
+    /// on the UI thread each time.
+    rich_text: RefCell<FxHashMap<ControlId, RichTextBlockState>>,
     pointer_revokers: RefCell<FxHashMap<ControlId, PointerRevokerSet>>,
     drag_revokers: RefCell<FxHashMap<ControlId, DragRevokerSet>>,
     menu_click_handlers: RefCell<FxHashMap<ControlId, EventHandler>>,
     command_bar_flyout_handlers: RefCell<FxHashMap<ControlId, EventHandler>>,
     theme_brush_registry: RefCell<FxHashMap<ControlId, Vec<(Prop, ThemeRef)>>>,
     resource_keys: RefCell<FxHashMap<ControlId, FxHashSet<String>>>,
+    /// Flyout open requests that arrived before the flyout itself was created
+    /// (props are applied before the flyout content slot mounts). Consumed by
+    /// `set_flyout_content` once the `Flyout` exists.
+    flyout_open_pending: RefCell<FxHashMap<ControlId, bool>>,
+    /// Flyout Closed handlers that arrived before the flyout existed.
+    flyout_closed_pending: RefCell<FxHashMap<ControlId, EventHandler>>,
     /// Per-host window state for window-level props.
     window_state: RefCell<Option<Rc<HostWindowState>>>,
     next_id: RefCell<u32>,
@@ -147,15 +160,15 @@ pub struct WinUIBackend {
 
 #[derive(Default)]
 struct PointerRevokerSet {
-    tapped: Option<windows_core::EventRevoker>,
-    right_tapped: Option<windows_core::EventRevoker>,
-    pressed: Option<windows_core::EventRevoker>,
-    released: Option<windows_core::EventRevoker>,
-    moved: Option<windows_core::EventRevoker>,
-    entered: Option<windows_core::EventRevoker>,
-    exited: Option<windows_core::EventRevoker>,
-    capture_lost: Option<windows_core::EventRevoker>,
-    canceled: Option<windows_core::EventRevoker>,
+    tapped: Option<EventRevoker>,
+    right_tapped: Option<EventRevoker>,
+    pressed: Option<EventRevoker>,
+    released: Option<EventRevoker>,
+    moved: Option<EventRevoker>,
+    entered: Option<EventRevoker>,
+    exited: Option<EventRevoker>,
+    capture_lost: Option<EventRevoker>,
+    canceled: Option<EventRevoker>,
     capture_on_press: bool,
 }
 
@@ -176,10 +189,10 @@ impl Drop for PropertyObserver {
 
 #[derive(Default)]
 struct DragRevokerSet {
-    enter: Option<windows_core::EventRevoker>,
-    leave: Option<windows_core::EventRevoker>,
-    over: Option<windows_core::EventRevoker>,
-    drop: Option<windows_core::EventRevoker>,
+    enter: Option<EventRevoker>,
+    leave: Option<EventRevoker>,
+    over: Option<EventRevoker>,
+    drop: Option<EventRevoker>,
 }
 
 /// Shared templated-list state touched from WinUI event handlers.
@@ -188,13 +201,202 @@ struct TemplatedShared {
     source: Rc<RefCell<Option<windows_collections::IObservableVector<windows_core::IInspectable>>>>,
     /// Logical row index -> template-root content host.
     containers: Rc<RefCell<FxHashMap<usize, bindings::IContentControl>>>,
+    /// Logical row index -> native item container used for anchor geometry.
+    item_containers: Rc<RefCell<FxHashMap<usize, bindings::IUIElement>>>,
+    scroll: Rc<RefCell<TemplatedScrollState>>,
+}
+
+struct TemplatedScrollState {
+    viewer: Option<bindings::IScrollViewer>,
+    /// User intent, not merely the current geometric distance from the tail.
+    /// Content growth may temporarily increase that distance before XAML has
+    /// completed layout; only an upward viewport movement detaches the user.
+    following_tail: bool,
+    last_vertical_offset: f64,
+    top_threshold: f64,
+    tail_threshold: f64,
+    on_top_reached: Option<Callback<()>>,
+    on_view_changed: Option<Callback<TemplatedViewport>>,
+    near_top: bool,
+    pending: Option<PreparedTemplatedScroll>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum PreparedTemplatedScroll {
+    Tail,
+    PreserveAnchor {
+        index: usize,
+        viewport_offset: f64,
+        offset_before: f64,
+    },
+    RestoreOffset {
+        vertical_offset: f64,
+        following_tail: bool,
+    },
+}
+
+impl Default for TemplatedScrollState {
+    fn default() -> Self {
+        Self {
+            viewer: None,
+            following_tail: true,
+            last_vertical_offset: 0.0,
+            top_threshold: 48.0,
+            tail_threshold: 48.0,
+            on_top_reached: None,
+            on_view_changed: None,
+            near_top: false,
+            pending: None,
+        }
+    }
+}
+
+/// RichTextBlock 增量状态：内容快照 + 已 realize 的段落/run 对象。
+///
+/// `set_rich_text_paragraphs` 逐段比较：未变化段落完全不动（Blocks
+/// 集合与 Paragraph 对象保留，不触发整块重排）；变化段复用段落对象，
+/// 段内再逐 run 比较——相同前缀 run 对象原位保留，文本变化但样式相同
+/// 的 run 复用对象仅 SetText（O(1)），样式变化的 run 新建并 SetAt 替换，
+/// 新增 run Append，多余 run RemoveAtEnd。流式期间每帧只动最后一个
+/// 生长 run，成本 O(delta) 而非 O(总长)。
+#[derive(Default)]
+struct RichTextBlockState {
+    paragraphs: Vec<RichTextParagraph>,
+    blocks: Vec<bindings::Paragraph>,
+    runs: Vec<Vec<bindings::Run>>,
+}
+
+/// 除文本外的 run 样式是否相同（复用对象仅 SetText 的前提）。
+fn rich_run_style_eq(a: &RichTextRun, b: &RichTextRun) -> bool {
+    a.is_bold == b.is_bold
+        && a.is_italic == b.is_italic
+        && a.foreground == b.foreground
+        && a.font_size == b.font_size
+        && a.font_family == b.font_family
+}
+
+/// 新建一个 run 对象并设置文本 + 完整样式。
+fn build_run_inline(def: &RichTextInline) -> Option<bindings::Run> {
+    match def {
+        RichTextInline::Run(r) => {
+            let run = bindings::Run::new().ok()?;
+            run.SetText(&r.text).ok()?;
+            if r.is_bold {
+                run.cast::<bindings::ITextElement>()
+                    .and_then(|te| te.SetFontWeight(bindings::FontWeight { weight: 700 }))
+                    .ok()?;
+            }
+            if r.is_italic {
+                run.cast::<bindings::ITextElement>()
+                    .and_then(|te| te.SetFontStyle(bindings::FontStyle::Italic))
+                    .ok()?;
+            }
+            if let Some(foreground) = r.foreground {
+                run.cast::<bindings::ITextElement>()
+                    .and_then(|te| {
+                        let brush = solid_brush(foreground)?;
+                        te.SetForeground(&brush)
+                    })
+                    .ok()?;
+            }
+            if let Some(size) = r.font_size {
+                run.cast::<bindings::ITextElement>()
+                    .and_then(|te| te.SetFontSize(size))
+                    .ok()?;
+            }
+            if let Some(family) = &r.font_family {
+                run.cast::<bindings::ITextElement>()
+                    .and_then(|te| {
+                        let family = bindings::FontFamily::CreateInstanceWithName(family)?;
+                        te.SetFontFamily(&family)
+                    })
+                    .ok()?;
+            }
+            Some(run)
+        }
+        RichTextInline::LineBreak => {
+            let run = bindings::Run::new().ok()?;
+            run.SetText("\n").ok()?;
+            Some(run)
+        }
+        RichTextInline::Hyperlink(h) => {
+            let run = bindings::Run::new().ok()?;
+            run.SetText(&h.text).ok()?;
+            Some(run)
+        }
+    }
+}
+
+/// 复用 run 对象：仅 SetText（调用方保证样式相同）。
+fn apply_run_inline(run: &bindings::Run, def: &RichTextInline) {
+    match def {
+        RichTextInline::Run(r) => diag::dropped(run.SetText(&r.text)),
+        RichTextInline::LineBreak => diag::dropped(run.SetText("\n")),
+        RichTextInline::Hyperlink(h) => diag::dropped(run.SetText(&h.text)),
+    }
+}
+
+/// 段内 run 级 diff：把 `new_defs` 同步进 `inlines`（对齐 `old_defs`）。
+/// 相同前缀 run 对象原位保留；文本变化但样式相同的 run 复用对象仅
+/// SetText；样式变化的 run 新建并 SetAt 替换；新增 Append；多余移除。
+/// `runs` 记录本段已 realize 的 run 对象（与 Inlines 位置一一对应）。
+/// 返回 (新建 run 数, 复用 run 数) 供诊断。
+fn sync_paragraph_inlines(
+    inlines: &bindings::InlineCollection,
+    old_defs: &[RichTextInline],
+    new_defs: &[RichTextInline],
+    runs: &mut Vec<bindings::Run>,
+) -> (usize, usize) {
+    let mut new_runs = 0usize;
+    let mut reused_runs = 0usize;
+    let common = old_defs
+        .iter()
+        .zip(new_defs.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    for j in common..new_defs.len() {
+        let def = &new_defs[j];
+        if j < runs.len() {
+            let style_same = match (&old_defs[j], def) {
+                (RichTextInline::Run(a), RichTextInline::Run(b)) => rich_run_style_eq(a, b),
+                (RichTextInline::LineBreak, RichTextInline::LineBreak) => true,
+                (RichTextInline::Hyperlink(a), RichTextInline::Hyperlink(b)) => a.uri == b.uri,
+                _ => false,
+            };
+            if style_same {
+                apply_run_inline(&runs[j], def);
+                reused_runs += 1;
+            } else if let Some(run) = build_run_inline(def) {
+                diag::dropped(
+                    run.cast::<bindings::Inline>()
+                        .and_then(|i| inlines.SetAt(j as u32, &i)),
+                );
+                runs[j] = run;
+                new_runs += 1;
+            }
+        } else if let Some(run) = build_run_inline(def) {
+            diag::dropped(
+                run.cast::<bindings::Inline>()
+                    .and_then(|i| inlines.Append(&i)),
+            );
+            runs.push(run);
+            new_runs += 1;
+        }
+    }
+    while runs.len() > new_defs.len() {
+        diag::dropped(inlines.RemoveAtEnd());
+        runs.pop();
+    }
+    (new_runs, reused_runs)
 }
 
 /// Per-list backend bookkeeping for templated (virtualized) lists.
 struct TemplatedList {
     shared: TemplatedShared,
-    realize_revoker: Option<windows_core::EventRevoker>,
-    reorder_revoker: Option<windows_core::EventRevoker>,
+    realize_revoker: Option<EventRevoker>,
+    reorder_revoker: Option<EventRevoker>,
+    view_changed_revoker: Option<EventRevoker>,
+    layout_updated_revoker: Option<EventRevoker>,
 }
 
 impl TemplatedList {
@@ -203,14 +405,162 @@ impl TemplatedList {
             shared: TemplatedShared::default(),
             realize_revoker: None,
             reorder_revoker: None,
+            view_changed_revoker: None,
+            layout_updated_revoker: None,
         }
     }
+}
+
+const TAIL_POSITION_EPSILON: f64 = 0.5;
+
+/// Updates follow-tail intent from a completed/native view change.
+///
+/// A growing extent with an unchanged offset is a layout race, not evidence
+/// that the user scrolled away. An actual upward offset movement detaches and
+/// cancels a pending tail correction. Returning inside the threshold opts in
+/// again and acknowledges a pending tail request.
+fn observe_templated_view(state: &mut TemplatedScrollState, vertical: f64, scrollable: f64) {
+    let distance = (scrollable - vertical).max(0.0);
+    let moved_up = vertical + TAIL_POSITION_EPSILON < state.last_vertical_offset;
+
+    if moved_up && distance > state.tail_threshold {
+        state.following_tail = false;
+        if matches!(state.pending, Some(PreparedTemplatedScroll::Tail)) {
+            state.pending = None;
+        }
+    } else if distance <= state.tail_threshold {
+        state.following_tail = true;
+        if matches!(state.pending, Some(PreparedTemplatedScroll::Tail)) {
+            state.pending = None;
+        }
+    }
+
+    state.last_vertical_offset = vertical;
+}
+
+/// Applies a prepared request using geometry from the latest XAML layout.
+///
+/// Tail requests remain armed until `ViewChanged` confirms the final offset.
+/// This is essential for streaming rows: reconcile runs before measure/arrange,
+/// so an immediate `ChangeView` may target the previous `ScrollableHeight`.
+fn apply_prepared_templated_scroll_shared(
+    scroll: &Rc<RefCell<TemplatedScrollState>>,
+    item_containers: &Rc<RefCell<FxHashMap<usize, bindings::IUIElement>>>,
+) -> bool {
+    let (request, viewer) = {
+        let state = scroll.borrow();
+        let Some(request) = state.pending else {
+            return true;
+        };
+        let Some(viewer) = state.viewer.clone() else {
+            return false;
+        };
+        (request, viewer)
+    };
+
+    let (target, wait_for_confirmation) = match request {
+        PreparedTemplatedScroll::Tail => {
+            let Ok(target) = viewer.ScrollableHeight() else {
+                return false;
+            };
+            (target.max(0.0), true)
+        }
+        PreparedTemplatedScroll::PreserveAnchor {
+            index,
+            viewport_offset,
+            offset_before,
+        } => {
+            let Some(container) = item_containers.borrow().get(&index).cloned() else {
+                return false;
+            };
+            let Ok(offset) = container.ActualOffset() else {
+                return false;
+            };
+            (
+                (offset_before + f64::from(offset.y) - viewport_offset).max(0.0),
+                false,
+            )
+        }
+        PreparedTemplatedScroll::RestoreOffset {
+            vertical_offset, ..
+        } => (vertical_offset.max(0.0), false),
+    };
+
+    let current = viewer.VerticalOffset().unwrap_or(0.0);
+    let scrollable = viewer.ScrollableHeight().unwrap_or(0.0);
+    // Content not yet laid out (ScrollableHeight == 0) must not confirm a
+    // Tail request: target 0 == current 0 would silently "succeed", the
+    // request is dropped, and the list stays pinned at the top once the
+    // extent grows — restore of a large snapshot on the first frame hits
+    // this every time (reconcile runs before measure/arrange). Keep the
+    // request armed; the LayoutUpdated observer retries with the final
+    // ScrollableHeight of a later layout pass.
+    let tail_requires_layout =
+        matches!(request, PreparedTemplatedScroll::Tail) && scrollable <= TAIL_POSITION_EPSILON;
+    if !tail_requires_layout && (target - current).abs() <= TAIL_POSITION_EPSILON {
+        let mut state = scroll.borrow_mut();
+        if state.pending == Some(request) {
+            state.pending = None;
+            if matches!(request, PreparedTemplatedScroll::Tail) {
+                state.following_tail = true;
+            } else if let PreparedTemplatedScroll::RestoreOffset { following_tail, .. } = request {
+                state.following_tail = following_tail;
+            }
+        }
+        return true;
+    }
+
+    let changed = viewer
+        .ChangeViewWithOptionalAnimation(None, Some(target), None, true)
+        .unwrap_or(false);
+    if !changed {
+        // `false` is not success: the view may not be laid out yet. Keep the
+        // request armed for LayoutUpdated/the next realization pass.
+        return false;
+    }
+
+    if wait_for_confirmation {
+        // ViewChanged owns acknowledgement, because another layout pass can
+        // increase ScrollableHeight while the change is being applied.
+        return false;
+    }
+
+    let mut state = scroll.borrow_mut();
+    if state.pending == Some(request) {
+        state.pending = None;
+        if let PreparedTemplatedScroll::RestoreOffset { following_tail, .. } = request {
+            state.following_tail = following_tail;
+        }
+    }
+    true
 }
 
 impl Default for WinUIBackend {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Walks the visual tree from `root` down to find the first `IScrollViewer`.
+///
+/// `FrameworkElement.FindName` cannot reach template namescope elements, and
+/// ListView's internal ScrollViewer lives in its template namescope — the
+/// FindName approach silently fails even after the template is applied. A
+/// VisualTreeHelper walk finds it by type instead.
+fn find_templated_scroll_viewer(root: &bindings::DependencyObject) -> Option<bindings::IScrollViewer> {
+    let count = bindings::VisualTreeHelper::GetChildrenCount(root).ok()?;
+    for i in 0..count {
+        let Ok(child) = bindings::VisualTreeHelper::GetChild(root, i) else {
+            continue;
+        };
+        if let Ok(viewer) = child.cast::<bindings::IScrollViewer>() {
+            return Some(viewer);
+        }
+        if let Some(viewer) = find_templated_scroll_viewer(&child) {
+            return Some(viewer);
+        }
+    }
+    None
 }
 
 impl WinUIBackend {
@@ -222,12 +572,15 @@ impl WinUIBackend {
             templated_selection_revokers: RefCell::new(FxHashMap::default()),
             templated: RefCell::new(FxHashMap::default()),
             content_template: RefCell::new(None),
+            rich_text: RefCell::new(FxHashMap::default()),
             pointer_revokers: RefCell::new(FxHashMap::default()),
             drag_revokers: RefCell::new(FxHashMap::default()),
             menu_click_handlers: RefCell::new(FxHashMap::default()),
             command_bar_flyout_handlers: RefCell::new(FxHashMap::default()),
             theme_brush_registry: RefCell::new(FxHashMap::default()),
             resource_keys: RefCell::new(FxHashMap::default()),
+            flyout_open_pending: RefCell::new(FxHashMap::default()),
+            flyout_closed_pending: RefCell::new(FxHashMap::default()),
             window_state: RefCell::new(None),
             next_id: RefCell::new(0),
         }
@@ -254,6 +607,97 @@ impl WinUIBackend {
         *self.content_template.borrow_mut() = Some(template.clone());
         template
     }
+
+    fn ensure_templated_scroll_viewer(&self, id: ControlId) -> bool {
+        let (scroll, item_containers) = {
+            let mut lists = self.templated.borrow_mut();
+            let entry = lists.entry(id).or_insert_with(TemplatedList::new);
+            if entry.shared.scroll.borrow().viewer.is_some() {
+                return true;
+            }
+            (
+                Rc::clone(&entry.shared.scroll),
+                Rc::clone(&entry.shared.item_containers),
+            )
+        };
+
+        let viewer = {
+            let controls = self.controls.borrow();
+            let Some(handle) = controls.get(&id) else {
+                return false;
+            };
+            let Ok(fe) = handle.cast_inner::<bindings::IFrameworkElement>() else {
+                return false;
+            };
+            let Ok(dep) = fe.cast::<bindings::DependencyObject>() else {
+                return false;
+            };
+            match find_templated_scroll_viewer(&dep) {
+                Some(viewer) => viewer,
+                None => return false,
+            }
+        };
+
+        {
+            let mut state = scroll.borrow_mut();
+            state.viewer = Some(viewer.clone());
+            state.last_vertical_offset = viewer.VerticalOffset().unwrap_or(0.0);
+        }
+        let scroll_for_event = Rc::clone(&scroll);
+        let viewer_for_event = viewer.clone();
+        let Ok(revoker) = viewer.ViewChanged(move |_sender, _args| {
+            let vertical = viewer_for_event.VerticalOffset().unwrap_or(0.0);
+            let scrollable = viewer_for_event.ScrollableHeight().unwrap_or(0.0);
+            let (top_callback, viewport_callback, viewport) = {
+                let mut state = scroll_for_event.borrow_mut();
+                observe_templated_view(&mut state, vertical, scrollable);
+                let near_top = vertical <= state.top_threshold;
+                let top_callback = (near_top && !state.near_top)
+                    .then(|| state.on_top_reached.clone())
+                    .flatten();
+                state.near_top = near_top;
+                let viewport = TemplatedViewport {
+                    vertical_offset: vertical,
+                    scrollable_height: scrollable,
+                    following_tail: state.following_tail,
+                };
+                (top_callback, state.on_view_changed.clone(), viewport)
+            };
+            if let Some(callback) = top_callback {
+                callback.invoke(());
+            }
+            if let Some(callback) = viewport_callback {
+                callback.invoke(viewport);
+            }
+        }) else {
+            scroll.borrow_mut().viewer = None;
+            return false;
+        };
+
+        // Reconcile mutates the native tree before WinUI measure/arrange. A
+        // persistent LayoutUpdated observer retries only while a request is
+        // pending, using the final ScrollableHeight from that layout pass.
+        let Ok(framework) = viewer.cast::<bindings::IFrameworkElement>() else {
+            scroll.borrow_mut().viewer = None;
+            return false;
+        };
+        let scroll_for_layout = Rc::clone(&scroll);
+        let containers_for_layout = Rc::clone(&item_containers);
+        let Ok(layout_revoker) = framework.LayoutUpdated(move |_sender, _args| {
+            if scroll_for_layout.borrow().pending.is_some() {
+                apply_prepared_templated_scroll_shared(&scroll_for_layout, &containers_for_layout);
+            }
+        }) else {
+            scroll.borrow_mut().viewer = None;
+            return false;
+        };
+
+        let mut lists = self.templated.borrow_mut();
+        let entry = lists.entry(id).or_insert_with(TemplatedList::new);
+        entry.view_changed_revoker = Some(revoker);
+        entry.layout_updated_revoker = Some(layout_revoker);
+        true
+    }
     pub fn find_titlebar(&self) -> Option<bindings::TitleBar> {
         self.controls.borrow().values().find_map(|h| match h {
             Handle::TitleBar(tb) => Some(tb.clone()),
@@ -264,6 +708,31 @@ impl WinUIBackend {
         let mut counter = self.next_id.borrow_mut();
         *counter += 1;
         ControlId::new(*counter)
+    }
+
+    /// Applies open/close requests and Closed handlers that arrived before
+    /// the flyout was created (props/events attach before the content slot
+    /// mounts). Called when the `Flyout` comes into existence.
+    fn consume_flyout_pending(&self, id: ControlId, b: &bindings::IButton) -> Result<()> {
+        let flyout = b.Flyout()?;
+        let fb = flyout.cast::<bindings::IFlyoutBase>()?;
+        if let Some(open) = self.flyout_open_pending.borrow_mut().remove(&id) {
+            if open {
+                let target = b.cast::<bindings::FrameworkElement>()?;
+                fb.ShowAt(&target)?;
+            } else {
+                fb.Hide()?;
+            }
+        }
+        if let Some(handler) = self.flyout_closed_pending.borrow_mut().remove(&id) {
+            let revoker = fb.Closed(move |_, _| handler.invoke())?;
+            self.event_revokers
+                .borrow_mut()
+                .entry((id, Event::FlyoutClosed))
+                .or_default()
+                .push(revoker);
+        }
+        Ok(())
     }
 
     fn observe_navigation_state(
@@ -372,7 +841,7 @@ impl WinUIBackend {
     fn wire_menu_bar_clicks(
         mb: &bindings::MenuBar,
         handler: &EventHandler,
-    ) -> Vec<windows_core::EventRevoker> {
+    ) -> Vec<EventRevoker> {
         let mut revokers = Vec::new();
         let Ok(bar_items) = mb.Items() else {
             return revokers;
@@ -388,7 +857,7 @@ impl WinUIBackend {
     fn wire_flyout_clicks(
         flyout: &bindings::MenuFlyout,
         handler: &EventHandler,
-    ) -> Vec<windows_core::EventRevoker> {
+    ) -> Vec<EventRevoker> {
         let mut revokers = Vec::new();
         if let Ok(items) = flyout.Items() {
             Self::wire_flyout_items_click(&items, handler, &mut revokers);
@@ -399,7 +868,7 @@ impl WinUIBackend {
     fn wire_flyout_items_click(
         items: &windows_collections::IVector<bindings::MenuFlyoutItemBase>,
         handler: &EventHandler,
-        revokers: &mut Vec<windows_core::EventRevoker>,
+        revokers: &mut Vec<EventRevoker>,
     ) {
         for base in items {
             if let Ok(item) = base.cast::<bindings::MenuFlyoutItem>() {
@@ -421,7 +890,7 @@ impl WinUIBackend {
     fn wire_command_bar_clicks(
         commands: &windows_collections::IObservableVector<bindings::ICommandBarElement>,
         handler: &EventHandler,
-    ) -> Vec<windows_core::EventRevoker> {
+    ) -> Vec<EventRevoker> {
         let mut revokers = Vec::new();
         for el in commands {
             if let Ok(btn) = el.cast::<bindings::AppBarButton>() {
@@ -754,6 +1223,14 @@ fn run_property_animation_inner(ui: &bindings::UIElement, cfg: AnimationConfig) 
         );
         visual.start_animation("Scale", &a);
     }
+    if let Some(t) = cfg.translation {
+        // 一次性位移动画：target Offset（Composition Visual 可动画属性）。
+        let a = compositor.create_vector3_key_frame_animation();
+        a.set_duration(cfg.duration);
+        let easing = easing_for(&compositor, cfg.easing);
+        a.insert_key_frame_with_easing(1.0, t, &easing);
+        visual.start_animation("Offset", &a);
+    }
     Ok(())
 }
 
@@ -804,6 +1281,25 @@ fn build_element_transition_animation(
             },
             &easing,
         );
+        group.add(&animation);
+    }
+
+    if let Some(t) = cfg.translation {
+        // 动画 target 必须是 Composition Visual 的可动画属性：
+        // Translation 不存在（XAML UIElement 才有）——用 Offset（Vector3）。
+        // 入场动画在布局完成后触发，动画结束 Offset 回到布局值，无残留。
+        let animation = compositor.create_vector3_key_frame_animation();
+        animation.set_duration(cfg.duration);
+        animation.set_target("Offset");
+        let zero = windows_numerics::Vector3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        if is_enter {
+            animation.insert_key_frame_with_easing(0.0, t, &easing);
+        }
+        animation.insert_key_frame_with_easing(1.0, zero, &easing);
         group.add(&animation);
     }
 
@@ -1011,6 +1507,9 @@ fn try_universal_prop(handle: &Handle, prop: Prop, value: &PropValue) -> Result<
         (Prop::Background, PropValue::Color(br)) => set_background(handle, &solid_brush(*br)?),
         (Prop::Background, PropValue::Unset) => set_background(handle, None::<&bindings::Brush>),
         (Prop::Foreground, PropValue::Color(br)) => set_foreground(handle, &solid_brush(*br)?),
+        (Prop::Foreground, PropValue::Gradient(g)) => {
+            set_foreground(handle, &gradient_brush(g)?)
+        }
         (Prop::Foreground, PropValue::Unset) => set_foreground(handle, None::<&bindings::Brush>),
         (Prop::Fill, PropValue::Color(b)) => {
             handle
@@ -1243,6 +1742,24 @@ impl Backend for WinUIBackend {
                     text.SetMaxLines(*v)
                 }
                 (Prop::MaxLines, PropValue::Unset, Handle::TextBlock(text)) => text.SetMaxLines(0),
+                (Prop::LineHeight, PropValue::F64(v), Handle::TextBlock(text)) => {
+                    text.SetLineHeight(*v)
+                }
+                (Prop::LineHeight, PropValue::Unset, Handle::TextBlock(text)) => {
+                    text.SetLineHeight(0.0)
+                }
+                (Prop::LineHeight, PropValue::F64(v), Handle::RichTextBlock(text)) => {
+                    text.SetLineHeight(*v)
+                }
+                (Prop::LineHeight, PropValue::Unset, Handle::RichTextBlock(text)) => {
+                    text.SetLineHeight(0.0)
+                }
+                (Prop::TextAlignment, PropValue::I32(v), Handle::TextBlock(text)) => {
+                    text.SetTextAlignment(TextAlignment(*v))
+                }
+                (Prop::TextAlignment, PropValue::Unset, Handle::TextBlock(text)) => {
+                    text.SetTextAlignment(TextAlignment::Left)
+                }
                 (Prop::TextTrimming, PropValue::I32(v), Handle::TextBlock(text)) => {
                     text.SetTextTrimming(TextTrimming(*v))
                 }
@@ -1801,6 +2318,9 @@ impl Backend for WinUIBackend {
                     let tb = string_as_textblock(s)?;
                     flyout.SetContent(&tb)?;
                     b.SetFlyout(&flyout)?;
+                    // Props are applied before the content slot mounts, so
+                    // pending open/closed state may have arrived first.
+                    self.consume_flyout_pending(id, b)?;
                     Ok(())
                 }
                 (Prop::FlyoutPlacement, PropValue::I32(v), Handle::Button(b)) => {
@@ -1809,6 +2329,25 @@ impl Backend for WinUIBackend {
                             fb.cast::<bindings::IFlyoutBase>()?
                                 .SetPlacement(FlyoutPlacementMode(*v)),
                         );
+                    }
+                    Ok(())
+                }
+                (Prop::FlyoutOpen, PropValue::Bool(v), Handle::Button(b)) => {
+                    match b.Flyout() {
+                        Ok(flyout) => {
+                            let fb = flyout.cast::<bindings::IFlyoutBase>()?;
+                            if *v {
+                                let target = b.cast::<bindings::FrameworkElement>()?;
+                                fb.ShowAt(&target)?;
+                            } else {
+                                fb.Hide()?;
+                            }
+                        }
+                        Err(_) => {
+                            // Flyout not created yet (props run before the
+                            // content slot mount); consumed on creation.
+                            self.flyout_open_pending.borrow_mut().insert(id, *v);
+                        }
                     }
                     Ok(())
                 }
@@ -2079,6 +2618,15 @@ impl Backend for WinUIBackend {
             } else {
                 diag::dropped(tb.SetContent(None));
             }
+        } else if let Handle::TabViewItem(tab) = handle {
+            if let Some(header_id) = header_id {
+                if let Some(header_handle) = map.get(&header_id) {
+                    let ui_element = header_handle.as_ui_element();
+                    diag::dropped(tab.SetHeader(&ui_element));
+                }
+            } else {
+                diag::dropped(tab.SetHeader(None));
+            }
         }
     }
 
@@ -2112,6 +2660,46 @@ impl Backend for WinUIBackend {
             } else {
                 diag::dropped(nv.SetPaneFooter(None));
             }
+        }
+    }
+
+    fn set_flyout_content(&mut self, id: ControlId, content_id: Option<ControlId>) {
+        let map = self.controls.borrow();
+        let Some(handle) = map.get(&id) else { return };
+        let Handle::Button(b) = handle else { return };
+        if let Some(cid) = content_id {
+            let Some(content_handle) = map.get(&cid) else {
+                return;
+            };
+            let ui_elem = content_handle.as_ui_element();
+            // Reuse an existing attached flyout (props like placement/open
+            // may already have targeted it); create one lazily otherwise.
+            let flyout: bindings::FlyoutBase = match b.Flyout() {
+                Ok(f) => f,
+                Err(_) => {
+                    let Ok(f) = bindings::Flyout::new() else {
+                        return;
+                    };
+                    diag::dropped(b.SetFlyout(&f));
+                    match f.cast::<bindings::FlyoutBase>() {
+                        Ok(fb) => fb,
+                        Err(_) => return,
+                    }
+                }
+            };
+            diag::dropped(
+                flyout
+                    .cast::<bindings::IFlyout>()
+                    .and_then(|i| i.SetContent(&ui_elem)),
+            );
+            self.consume_flyout_pending(id, b)
+                .unwrap_or_else(|e| diag::warn(format_args!("set_flyout_content pending: {e:?}")));
+        } else if let Ok(flyout) = b.Flyout() {
+            diag::dropped(
+                flyout
+                    .cast::<bindings::IFlyout>()
+                    .and_then(|i| i.SetContent(None::<&bindings::UIElement>)),
+            );
         }
     }
 
@@ -2152,6 +2740,89 @@ impl Backend for WinUIBackend {
                 }
             }
         }
+    }
+    fn configure_templated_scroll(
+        &mut self,
+        id: ControlId,
+        top_threshold: f64,
+        tail_threshold: f64,
+        on_top_reached: Option<Callback<()>>,
+        on_view_changed: Option<Callback<TemplatedViewport>>,
+    ) {
+        let scroll = {
+            let mut lists = self.templated.borrow_mut();
+            Rc::clone(
+                &lists
+                    .entry(id)
+                    .or_insert_with(TemplatedList::new)
+                    .shared
+                    .scroll,
+            )
+        };
+        {
+            let mut state = scroll.borrow_mut();
+            state.top_threshold = top_threshold.max(0.0);
+            state.tail_threshold = tail_threshold.max(0.0);
+            state.on_top_reached = on_top_reached;
+            state.on_view_changed = on_view_changed;
+        }
+        self.ensure_templated_scroll_viewer(id);
+    }
+
+    fn prepare_templated_scroll(&mut self, id: ControlId, request: TemplatedScrollRequest) {
+        self.ensure_templated_scroll_viewer(id);
+        let scroll = {
+            let mut lists = self.templated.borrow_mut();
+            Rc::clone(
+                &lists
+                    .entry(id)
+                    .or_insert_with(TemplatedList::new)
+                    .shared
+                    .scroll,
+            )
+        };
+        let mut state = scroll.borrow_mut();
+        state.pending = match request {
+            TemplatedScrollRequest::ForceTail { .. } => Some(PreparedTemplatedScroll::Tail),
+            TemplatedScrollRequest::FollowTail { .. } if state.following_tail => {
+                Some(PreparedTemplatedScroll::Tail)
+            }
+            TemplatedScrollRequest::FollowTail { .. } => None,
+            TemplatedScrollRequest::PreserveAnchor {
+                index,
+                viewport_offset,
+                ..
+            } => Some(PreparedTemplatedScroll::PreserveAnchor {
+                index,
+                viewport_offset,
+                offset_before: state
+                    .viewer
+                    .as_ref()
+                    .and_then(|viewer| viewer.VerticalOffset().ok())
+                    .unwrap_or(0.0),
+            }),
+            TemplatedScrollRequest::RestoreOffset {
+                vertical_offset,
+                following_tail,
+                ..
+            } => Some(PreparedTemplatedScroll::RestoreOffset {
+                vertical_offset,
+                following_tail,
+            }),
+        };
+    }
+
+    fn apply_prepared_templated_scroll(&mut self, id: ControlId) -> bool {
+        self.ensure_templated_scroll_viewer(id);
+        let (scroll, item_containers) = {
+            let mut lists = self.templated.borrow_mut();
+            let entry = lists.entry(id).or_insert_with(TemplatedList::new);
+            (
+                Rc::clone(&entry.shared.scroll),
+                Rc::clone(&entry.shared.item_containers),
+            )
+        };
+        apply_prepared_templated_scroll_shared(&scroll, &item_containers)
     }
     fn attach_templated_selection_changed(&mut self, id: ControlId, handler: Callback<i32>) {
         let map = self.controls.borrow();
@@ -2197,6 +2868,7 @@ impl Backend for WinUIBackend {
         let mut lists = self.templated.borrow_mut();
         let entry = lists.entry(id).or_insert_with(TemplatedList::new);
         let containers = Rc::clone(&entry.shared.containers);
+        let item_containers = Rc::clone(&entry.shared.item_containers);
 
         let revoker = lvb
             .ContainerContentChanging(move |_sender, args| {
@@ -2222,6 +2894,7 @@ impl Backend for WinUIBackend {
                     let mut map = containers.borrow_mut();
                     if let Some(row) = map.iter().find(|(_, c)| **c == cc).map(|(row, _)| *row) {
                         map.remove(&row);
+                        item_containers.borrow_mut().remove(&row);
                         drop(map);
                         recycle(row);
                     }
@@ -2234,6 +2907,9 @@ impl Backend for WinUIBackend {
                     let row = row as usize;
                     diag::dropped(args.SetHandled(true));
                     containers.borrow_mut().insert(row, cc);
+                    if let Ok(container) = item_container.cast::<bindings::IUIElement>() {
+                        item_containers.borrow_mut().insert(row, container);
+                    }
                     realize(row);
                 }
             })
@@ -2312,6 +2988,9 @@ impl Backend for WinUIBackend {
         self.command_bar_flyout_handlers.borrow_mut().remove(&id);
         self.theme_brush_registry.borrow_mut().remove(&id);
         self.resource_keys.borrow_mut().remove(&id);
+        self.rich_text.borrow_mut().remove(&id);
+        self.flyout_open_pending.borrow_mut().remove(&id);
+        self.flyout_closed_pending.borrow_mut().remove(&id);
     }
     fn attach_event(&mut self, id: ControlId, event: Event, handler: EventHandler) {
         let map = self.controls.borrow();
@@ -2341,8 +3020,22 @@ impl Backend for WinUIBackend {
             return;
         }
 
-        let mut revokers: Vec<windows_core::EventRevoker> = Vec::new();
+        let mut revokers: Vec<EventRevoker> = Vec::new();
         match (event, handle) {
+            (Event::FlyoutClosed, Handle::Button(b)) => {
+                // The flyout may not exist yet (events attach before the
+                // content slot mounts); defer to `consume_flyout_pending`.
+                if let Ok(flyout) = b.Flyout() {
+                    if let Ok(fb) = flyout.cast::<bindings::IFlyoutBase>() {
+                        let handler = handler.clone();
+                        if let Ok(rev) = fb.Closed(move |_, _| handler.invoke()) {
+                            revokers.push(rev);
+                        }
+                    }
+                } else {
+                    self.flyout_closed_pending.borrow_mut().insert(id, handler);
+                }
+            }
             (Event::Closed, Handle::ContentDialog(d)) => {
                 revokers.push(
                     d.Closed(move |_sender, args| {
@@ -2866,6 +3559,11 @@ impl Backend for WinUIBackend {
         }
     }
     fn set_rich_text_paragraphs(&mut self, id: ControlId, paragraphs: &[RichTextParagraph]) {
+        #[cfg(debug_assertions)]
+        let t0 = std::time::Instant::now();
+        // 段落级 + 段内 run 级 diff：内容未变零操作（每帧 render 都走到
+        // 这里）；未变化段落/run 的对象与 Blocks 位置全部保留，只重建
+        // 真正变化的部分——流式期间每帧只动最后一个生长 run。
         let map = self.controls.borrow();
         let Some(handle) = map.get(&id) else {
             return;
@@ -2874,57 +3572,114 @@ impl Backend for WinUIBackend {
             return;
         };
         let Ok(blocks) = rtb.Blocks() else { return };
-        diag::dropped(blocks.Clear());
-        for para_def in paragraphs {
-            let Ok(para) = bindings::Paragraph::new() else {
+        drop(map);
+
+        let mut cache = self.rich_text.borrow_mut();
+        let state = cache.entry(id).or_insert_with(RichTextBlockState::default);
+        if state.paragraphs == paragraphs {
+            return;
+        }
+        let old = std::mem::replace(&mut state.paragraphs, paragraphs.to_vec());
+
+        #[cfg(debug_assertions)]
+        let (mut rebuilt_paras, mut new_runs, mut reused_runs) = (0usize, 0usize, 0usize);
+
+        // 1) 不变前缀段落：对象与 Blocks 位置全部保留（零 COM 调用）。
+        let common = old
+            .iter()
+            .zip(paragraphs.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+
+        // 2) common 之后逐段对齐：段内 run 级 diff（复用段落对象与
+        //    前缀 run），新增段 Append，多余段 RemoveAtEnd。
+        for i in common..paragraphs.len() {
+            let para_def = &paragraphs[i];
+            if i < old.len() && old[i] == *para_def {
+                // 与旧内容相同（common 之后个别段相等）→ 对象保留。
                 continue;
-            };
-            let Ok(inlines) = para.Inlines() else {
-                continue;
-            };
-            for inline in &para_def.inlines {
-                match inline {
-                    RichTextInline::Run(r) => {
-                        let Ok(run) = bindings::Run::new() else {
-                            continue;
-                        };
-                        diag::dropped(run.SetText(&r.text));
-                        if r.is_bold {
-                            diag::dropped(run.cast::<bindings::ITextElement>().and_then(|te| {
-                                te.SetFontWeight(bindings::FontWeight { weight: 700 })
-                            }));
-                        }
-                        diag::dropped(
-                            run.cast::<bindings::Inline>()
-                                .and_then(|i| inlines.Append(&i)),
-                        );
-                    }
-                    RichTextInline::LineBreak => {
-                        let Ok(run) = bindings::Run::new() else {
-                            continue;
-                        };
-                        diag::dropped(run.SetText("\n"));
-                        diag::dropped(
-                            run.cast::<bindings::Inline>()
-                                .and_then(|i| inlines.Append(&i)),
-                        );
-                    }
-                    RichTextInline::Hyperlink(h) => {
-                        let Ok(run) = bindings::Run::new() else {
-                            continue;
-                        };
-                        diag::dropped(run.SetText(&h.text));
-                        diag::dropped(
-                            run.cast::<bindings::Inline>()
-                                .and_then(|i| inlines.Append(&i)),
-                        );
-                    }
-                }
             }
-            diag::dropped(
-                para.cast::<bindings::Block>()
-                    .and_then(|b| blocks.Append(&b)),
-            );
+            #[cfg(debug_assertions)]
+            {
+                rebuilt_paras += 1;
+            }
+            let old_defs = old.get(i).map(|p| p.inlines.as_slice()).unwrap_or(&[]);
+            let para = if i < state.blocks.len() {
+                // 复用段落对象（Blocks 位置不动），段内 run 级 diff。
+                let para = state.blocks[i].clone();
+                if let Ok(inlines) = para.Inlines() {
+                    let mut runs = state.runs.get_mut(i).cloned().unwrap_or_default();
+                    let (n, r) =
+                        sync_paragraph_inlines(&inlines, old_defs, &para_def.inlines, &mut runs);
+                    state.runs[i] = runs;
+                    #[cfg(debug_assertions)]
+                    {
+                        new_runs += n;
+                        reused_runs += r;
+                    }
+                    #[cfg(not(debug_assertions))]
+                    let _ = (n, r);
+                }
+                para
+            } else {
+                let Ok(para) = bindings::Paragraph::new() else {
+                    continue;
+                };
+                if let Ok(inlines) = para.Inlines() {
+                    let mut runs = Vec::new();
+                    let (n, _) = sync_paragraph_inlines(&inlines, &[], &para_def.inlines, &mut runs);
+                    state.runs.push(runs);
+                    #[cfg(debug_assertions)]
+                    {
+                        new_runs += n;
+                    }
+                    #[cfg(not(debug_assertions))]
+                    let _ = n;
+                }
+                diag::dropped(
+                    para.cast::<bindings::Block>()
+                        .and_then(|b| blocks.Append(&b)),
+                );
+                para
+            };
+            if i < state.blocks.len() {
+                state.blocks[i] = para;
+            } else {
+                state.blocks.push(para);
+            }
+        }
+
+        // 3) 多余段落：Blocks 尾部弹出（对象与 runs 一并丢弃）。
+        while state.blocks.len() > paragraphs.len() {
+            diag::dropped(blocks.RemoveAtEnd());
+            state.blocks.pop();
+            state.runs.pop();
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            // 聚合输出（每 60 次调用一行），避免逐帧 eprintln 重定向
+            // 到文件的 I/O 污染 reconcile 计时（实测 ~2.2ms/次）。
+            use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+            static AGG_FRAMES: AtomicU32 = AtomicU32::new(0);
+            static AGG_NEW_RUNS: AtomicU32 = AtomicU32::new(0);
+            static AGG_REUSE_RUNS: AtomicU32 = AtomicU32::new(0);
+            static AGG_REBUILT: AtomicU32 = AtomicU32::new(0);
+            static AGG_US: AtomicU64 = AtomicU64::new(0);
+            let f = AGG_FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+            AGG_NEW_RUNS.fetch_add(new_runs as u32, Ordering::Relaxed);
+            AGG_REUSE_RUNS.fetch_add(reused_runs as u32, Ordering::Relaxed);
+            AGG_REBUILT.fetch_add(rebuilt_paras as u32, Ordering::Relaxed);
+            AGG_US.fetch_add((t0.elapsed().as_secs_f64() * 1e6) as u64, Ordering::Relaxed);
+            if f % 60 == 0 {
+                eprintln!(
+                    "rtb-diff-agg calls={f} avg={:.3}ms rebuilt={} runs:new={} reuse={}",
+                    AGG_US.load(Ordering::Relaxed) as f64 / f as f64 / 1000.0,
+                    AGG_REBUILT.load(Ordering::Relaxed),
+                    AGG_NEW_RUNS.load(Ordering::Relaxed),
+                    AGG_REUSE_RUNS.load(Ordering::Relaxed),
+                );
+            }
         }
     }
 
@@ -3592,5 +4347,54 @@ fn mount_static_tooltip_element(el: &Element) -> Option<bindings::UIElement> {
             tb.SetText(el.kind_name()).ok()?;
             tb.cast::<bindings::UIElement>().ok()
         }
+    }
+}
+
+#[cfg(test)]
+mod templated_scroll_tests {
+    use super::*;
+
+    fn following_state() -> TemplatedScrollState {
+        TemplatedScrollState {
+            following_tail: true,
+            last_vertical_offset: 600.0,
+            tail_threshold: 120.0,
+            pending: Some(PreparedTemplatedScroll::Tail),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn content_growth_does_not_detach_tail_intent() {
+        let mut state = following_state();
+
+        // The row grew after reconcile, but layout has not corrected the
+        // viewport yet. Geometry alone must not look like user scrolling.
+        observe_templated_view(&mut state, 600.0, 820.0);
+
+        assert!(state.following_tail);
+        assert_eq!(state.pending, Some(PreparedTemplatedScroll::Tail));
+    }
+
+    #[test]
+    fn upward_user_scroll_detaches_and_cancels_tail_retry() {
+        let mut state = following_state();
+
+        observe_templated_view(&mut state, 420.0, 820.0);
+
+        assert!(!state.following_tail);
+        assert_eq!(state.pending, None);
+    }
+
+    #[test]
+    fn returning_near_tail_reenables_following_and_acknowledges() {
+        let mut state = following_state();
+        state.following_tail = false;
+        state.last_vertical_offset = 420.0;
+
+        observe_templated_view(&mut state, 710.0, 820.0);
+
+        assert!(state.following_tail);
+        assert_eq!(state.pending, None);
     }
 }

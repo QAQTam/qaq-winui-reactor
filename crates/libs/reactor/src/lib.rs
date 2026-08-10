@@ -52,6 +52,7 @@ pub use bindings::ScrollingScrollBarVisibility;
 pub use bindings::Stretch;
 pub use bindings::Symbol;
 pub use bindings::TeachingTipPlacementMode;
+pub use bindings::TextAlignment;
 pub use bindings::TextTrimming;
 pub use bindings::TextWrapping;
 pub use bindings::Thickness;
@@ -76,5 +77,20 @@ pub use reference::*;
 pub use style::*;
 pub use widget::*;
 pub use widgets::*;
-pub use windows_core::{Error, Interface, Result};
+pub use windows_core::{Error, EventRevoker, Interface, Result};
 pub use windows_time::{DateTime, TimeSpan};
+
+/// 订阅合成器帧回调（vsync 对齐）。
+///
+/// 回调在 UI 线程的 XAML 渲染阶段执行，频率 = 显示器刷新率
+/// （60Hz → 60 次/s，120Hz → 120 次/s），比 DispatcherTimer 精确
+/// （16ms 请求会被 Windows 系统时钟 15.6ms 粒度合并到 ~31ms，
+/// 帧率上限 33；8ms 请求只能到 15.6ms ≈ 64fps，仍跟不上 120Hz 屏）。
+/// 120Hz 客户屏的流畅渲染依赖此回调驱动事件泵。
+///
+/// 回调是 `Fn`（不可变借用），内部可变用 `RefCell`/`use_ref`。
+/// 返回的 `EventRevoker` 必须被持有（drop 即退订）；窗口不可见时
+/// 合成器暂停回调，恢复后一次性补处理积压事件。
+pub fn on_frame(callback: impl Fn() + 'static) -> Result<EventRevoker> {
+    bindings::CompositionTarget::Rendering(move |_sender, _args| callback())
+}

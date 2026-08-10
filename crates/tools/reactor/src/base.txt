@@ -46,7 +46,7 @@ Microsoft::UI::Xaml::Controls::ColumnDefinition::CreateInstance
 Microsoft::UI::Xaml::Controls::ColumnDefinitionCollection
 Microsoft::UI::Xaml::Controls::CommandBarDefaultLabelPosition
 Microsoft::UI::Xaml::Controls::CommandBarFlyout::CreateInstance
-Microsoft::UI::Xaml::Controls::ContentControl
+Microsoft::UI::Xaml::Controls::ContentControl::CreateInstance
 Microsoft::UI::Xaml::Controls::ContentDialogClosedEventArgs
 Microsoft::UI::Xaml::Controls::ContentDialogResult
 Microsoft::UI::Xaml::Controls::Control
@@ -83,7 +83,7 @@ Microsoft::UI::Xaml::Controls::ICommandBarFlyoutFactory
 Microsoft::UI::Xaml::Controls::IContentControl::{get_Content, get_ContentTemplateRoot}
 Microsoft::UI::Xaml::Controls::IContentDialog::{ShowAsync, Hide, Closed}
 Microsoft::UI::Xaml::Controls::IContentDialogClosedEventArgs::get_Result
-Microsoft::UI::Xaml::Controls::IControl::{put_Padding, put_Background, put_Foreground, put_FontSize, put_FontWeight, put_FontFamily, put_BorderBrush, put_BorderThickness}
+Microsoft::UI::Xaml::Controls::IControl::{put_Padding, put_Background, put_Foreground, put_FontSize, put_FontWeight, put_FontFamily, put_BorderBrush, put_BorderThickness, put_HorizontalContentAlignment, put_VerticalContentAlignment}
 Microsoft::UI::Xaml::Controls::IDatePicker::SelectedDateChanged
 Microsoft::UI::Xaml::Controls::IDatePickerSelectedValueChangedEventArgs::get_NewDate
 Microsoft::UI::Xaml::Controls::IExpander::{put_Header, Expanding, Collapsed}
@@ -119,8 +119,9 @@ Microsoft::UI::Xaml::Controls::IPivotItem::put_Header
 Microsoft::UI::Xaml::Controls::IRadioButtons::{SelectionChanged, get_Items, get_SelectedIndex}
 Microsoft::UI::Xaml::Controls::IRatingControl::{get_Value, ValueChanged}
 Microsoft::UI::Xaml::Controls::IRichEditBox::{get_Document, TextChanged}
-Microsoft::UI::Xaml::Controls::IRichTextBlock::{put_FontSize, put_FontFamily, put_IsTextSelectionEnabled, put_TextWrapping, put_Foreground, put_Padding, get_Blocks}
+Microsoft::UI::Xaml::Controls::IRichTextBlock::{put_FontSize, put_FontFamily, put_IsTextSelectionEnabled, put_TextWrapping, put_Foreground, put_Padding, put_LineHeight, get_Blocks}
 Microsoft::UI::Xaml::Controls::IRowDefinition::put_Height
+Microsoft::UI::Xaml::Controls::IScrollViewer::{get_VerticalOffset, get_ExtentHeight, get_ViewportHeight, get_ScrollableHeight, ChangeView, ChangeViewWithOptionalAnimation, ViewChanged}
 Microsoft::UI::Xaml::Controls::IScrollView::put_Content
 Microsoft::UI::Xaml::Controls::ISelectorBar::{get_Items, get_SelectedItem, SelectionChanged}
 Microsoft::UI::Xaml::Controls::ISelectorBarItem::{put_Text, get_Text, put_Icon}
@@ -132,7 +133,7 @@ Microsoft::UI::Xaml::Controls::ITabView::{get_TabItems, get_SelectedIndex, Selec
 Microsoft::UI::Xaml::Controls::ITabViewItem::{put_Header, put_IsClosable}
 Microsoft::UI::Xaml::Controls::ITabViewTabCloseRequestedEventArgs::get_Tab
 Microsoft::UI::Xaml::Controls::ITeachingTip::{put_ActionButtonContent, put_CloseButtonContent, Closed, ActionButtonClick}
-Microsoft::UI::Xaml::Controls::ITextBlock::{get_Text, put_FontSize, put_FontWeight, put_FontFamily, put_Foreground, put_MaxLines, put_Padding, put_TextTrimming}
+Microsoft::UI::Xaml::Controls::ITextBlock::{get_Text, put_FontSize, put_FontWeight, put_FontFamily, put_Foreground, put_MaxLines, put_Padding, put_LineHeight, put_TextAlignment, put_TextTrimming}
 Microsoft::UI::Xaml::Controls::ITextBox::{get_Text, put_Text, TextChanged}
 Microsoft::UI::Xaml::Controls::ITimePicker::SelectedTimeChanged
 Microsoft::UI::Xaml::Controls::ITimePickerSelectedValueChangedEventArgs::get_NewTime
@@ -167,7 +168,7 @@ Microsoft::UI::Xaml::Controls::PasswordRevealMode
 Microsoft::UI::Xaml::Controls::PivotItem::CreateInstance
 Microsoft::UI::Xaml::Controls::Primitives::FlyoutPlacementMode
 Microsoft::UI::Xaml::Controls::Primitives::IButtonBase::Click
-Microsoft::UI::Xaml::Controls::Primitives::IFlyoutBase::put_Placement
+Microsoft::UI::Xaml::Controls::Primitives::IFlyoutBase::{put_Placement, ShowAt, Hide, Closed}
 Microsoft::UI::Xaml::Controls::Primitives::IRangeBase::{put_SmallChange, ValueChanged}
 Microsoft::UI::Xaml::Controls::Primitives::IRangeBaseValueChangedEventArgs::get_NewValue
 Microsoft::UI::Xaml::Controls::Primitives::ISelector::{get_SelectedIndex, SelectionChanged}
@@ -180,6 +181,7 @@ Microsoft::UI::Xaml::Controls::RichTextBlock::CreateInstance
 Microsoft::UI::Xaml::Controls::RowDefinition::CreateInstance
 Microsoft::UI::Xaml::Controls::RowDefinitionCollection
 Microsoft::UI::Xaml::Controls::ScrollBarVisibility
+Microsoft::UI::Xaml::Controls::ScrollViewerViewChangedEventArgs
 Microsoft::UI::Xaml::Controls::ScrollingScrollBarVisibility
 Microsoft::UI::Xaml::Controls::SelectionChangedEventHandler
 Microsoft::UI::Xaml::Controls::SelectorBarItem::CreateInstance
@@ -210,7 +212,7 @@ Microsoft::UI::Xaml::IDependencyObject::{RegisterPropertyChangedCallback, Unregi
 Microsoft::UI::Xaml::Documents::BlockCollection
 Microsoft::UI::Xaml::Documents::IParagraph::get_Inlines
 Microsoft::UI::Xaml::Documents::IRun::put_Text
-Microsoft::UI::Xaml::Documents::ITextElement::put_FontWeight
+Microsoft::UI::Xaml::Documents::ITextElement::{put_FontSize, put_FontFamily, put_FontWeight, put_FontStyle, put_Foreground}
 Microsoft::UI::Xaml::Documents::InlineCollection
 Microsoft::UI::Xaml::Documents::Paragraph::CreateInstance
 Microsoft::UI::Xaml::Documents::Run::CreateInstance
@@ -229,11 +231,11 @@ Microsoft::UI::Xaml::IApplicationOverrides
 Microsoft::UI::Xaml::IDragEventArgs::{put_AcceptedOperation, get_DataView, get_DragUIOverride, GetDeferral}
 Microsoft::UI::Xaml::IDragOperationDeferral::Complete
 Microsoft::UI::Xaml::IDragUIOverride::{put_Caption, put_IsGlyphVisible, put_IsContentVisible}
-Microsoft::UI::Xaml::IFrameworkElement::{put_VerticalAlignment, put_HorizontalAlignment, put_Margin, put_Height, put_Width, put_MinWidth, get_MaxWidth, put_MaxWidth, put_MinHeight, get_MaxHeight, put_MaxHeight, put_RequestedTheme, get_ActualTheme, ActualThemeChanged, put_Tag, get_Tag, get_ActualWidth, get_ActualHeight, put_Style, SizeChanged, Loaded, get_Resources}
+Microsoft::UI::Xaml::IFrameworkElement::{put_VerticalAlignment, put_HorizontalAlignment, put_Margin, put_Height, put_Width, put_MinWidth, get_MaxWidth, put_MaxWidth, put_MinHeight, get_MaxHeight, put_MaxHeight, put_RequestedTheme, get_ActualTheme, ActualThemeChanged, put_Tag, get_Tag, get_ActualWidth, get_ActualHeight, put_Style, SizeChanged, LayoutUpdated, Loaded, get_Resources, FindName}
 Microsoft::UI::Xaml::IResourceDictionary::get_MergedDictionaries
 Microsoft::UI::Xaml::ISizeChangedEventArgs::get_NewSize
 Microsoft::UI::Xaml::FocusState
-Microsoft::UI::Xaml::IUIElement::{put_AllowDrop, put_Opacity, put_XamlRoot, get_XamlRoot, get_KeyboardAccelerators, put_KeyboardAcceleratorPlacementMode, Focus, CapturePointer, ReleasePointerCapture, ReleasePointerCaptures, PointerPressed, PointerReleased, PointerMoved, PointerEntered, PointerExited, PointerCaptureLost, PointerCanceled, Tapped, RightTapped, DragEnter, DragLeave, DragOver, Drop}
+Microsoft::UI::Xaml::IUIElement::{put_AllowDrop, put_Opacity, put_XamlRoot, get_XamlRoot, get_KeyboardAccelerators, put_KeyboardAcceleratorPlacementMode, Focus, CapturePointer, ReleasePointerCapture, ReleasePointerCaptures, PointerPressed, PointerReleased, PointerMoved, PointerEntered, PointerExited, PointerCaptureLost, PointerCanceled, Tapped, RightTapped, DragEnter, DragLeave, DragOver, Drop, get_ActualOffset}
 Microsoft::UI::Xaml::IWindow2::{get_AppWindow, put_SystemBackdrop}
 Microsoft::UI::Xaml::IWindow::{put_Title, put_Content, put_ExtendsContentIntoTitleBar, SetTitleBar, Activate, Close, Closed}
 Microsoft::UI::Xaml::IWindowEventArgs::{}
@@ -255,22 +257,32 @@ Microsoft::UI::Xaml::Markup::IXamlMetadataProvider
 Microsoft::UI::Xaml::Markup::IXamlType::{}
 Microsoft::UI::Xaml::Markup::XamlReader::Load
 Microsoft::UI::Xaml::Markup::XmlnsDefinition
+Microsoft::UI::Xaml::Media::VisualTreeHelper::{GetChildrenCount, GetChild}
 Microsoft::UI::Xaml::Media::Brush
 Microsoft::UI::Xaml::Media::CompositionTarget::Rendering
 Microsoft::UI::Xaml::Media::DesktopAcrylicBackdrop::CreateInstance
 Microsoft::UI::Xaml::Media::FontFamily::CreateInstanceWithName
+Microsoft::UI::Xaml::Media::GradientBrush
+Microsoft::UI::Xaml::Media::GradientStop::CreateInstance
+Microsoft::UI::Xaml::Media::GradientStopCollection
+Microsoft::UI::Xaml::Media::IGradientBrush::get_GradientStops
+Microsoft::UI::Xaml::Media::IGradientStop::{put_Color, put_Offset}
+Microsoft::UI::Xaml::Media::ILinearGradientBrush::{put_StartPoint, put_EndPoint}
+Microsoft::UI::Xaml::Media::LinearGradientBrush::CreateInstance
 Microsoft::UI::Xaml::Media::IMicaBackdrop::put_Kind
 Microsoft::UI::Xaml::Media::ISolidColorBrush::put_Color
 Microsoft::UI::Xaml::Media::ImageSource
 Microsoft::UI::Xaml::Media::Imaging::BitmapImage::CreateInstance
 Microsoft::UI::Xaml::Media::Imaging::IBitmapImage::put_UriSource
-Microsoft::UI::Xaml::Media::Imaging::ISvgImageSource::put_UriSource
+Microsoft::UI::Xaml::Media::Imaging::ISvgImageSource::{put_UriSource, SetSourceAsync}
 Microsoft::UI::Xaml::Media::Imaging::SurfaceImageSource::CreateInstanceWithDimensions
 Microsoft::UI::Xaml::Media::Imaging::SvgImageSource::CreateInstance
 Microsoft::UI::Xaml::Media::MicaBackdrop::CreateInstance
+Microsoft::UI::Xaml::Media::Shadow
 Microsoft::UI::Xaml::Media::SolidColorBrush::CreateInstance
 Microsoft::UI::Xaml::Media::Stretch
 Microsoft::UI::Xaml::Media::SystemBackdrop
+Microsoft::UI::Xaml::Media::ThemeShadow::CreateInstance
 Microsoft::UI::Xaml::RoutedEventHandler
 Microsoft::UI::Xaml::SetterBase
 Microsoft::UI::Xaml::Shapes::Ellipse::CreateInstance
@@ -282,6 +294,7 @@ Microsoft::UI::Xaml::Shapes::Rectangle::CreateInstance
 Microsoft::UI::Xaml::Shapes::Shape
 Microsoft::UI::Xaml::SizeChangedEventArgs
 Microsoft::UI::Xaml::SizeChangedEventHandler
+Microsoft::UI::Xaml::TextAlignment
 Microsoft::UI::Xaml::TextWrapping
 Microsoft::UI::Xaml::Thickness
 Microsoft::UI::Xaml::TriggerBase
@@ -295,12 +308,17 @@ Windows::ApplicationModel::DataTransfer::DataPackageOperation
 Windows::ApplicationModel::DataTransfer::DataPackageView
 Windows::ApplicationModel::DataTransfer::IDataPackageView::{get_AvailableFormats, GetTextAsync, GetStorageItemsAsync}
 Windows::Foundation::EventHandler
+Windows::Foundation::Point
 Windows::Foundation::Size
 Windows::Foundation::TypedEventHandler
 Windows::Foundation::Uri::CreateUri
 Windows::Graphics::SizeInt32
 Windows::Storage::FileAttributes
 Windows::Storage::IStorageItem::{get_Path, get_Name, get_Attributes}
+Windows::Storage::Streams::DataWriter::CreateDataWriter
+Windows::Storage::Streams::IDataWriter::{WriteBytes, StoreAsync, DetachStream}
+Windows::Storage::Streams::IRandomAccessStream::Seek
+Windows::Storage::Streams::InMemoryRandomAccessStream
 Windows::System::VirtualKey
 Windows::System::VirtualKeyModifiers
 Windows::UI::Color

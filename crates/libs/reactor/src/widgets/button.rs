@@ -46,6 +46,12 @@ impl Button {
 
 impl Widget for Button {
     widget_header!(ControlKind::Button);
+    fn flyout_element(&self) -> Option<&Element> {
+        self.flyout
+            .as_ref()
+            .and_then(|f| f.content.as_ref())
+            .map(|b| b.as_ref())
+    }
     fn bindings(&self) -> PropBindings {
         let mut out = generated::button_bindings(self);
         out.push(Binding::Prop(
@@ -66,14 +72,27 @@ impl Widget for Button {
         }
         // Flyout and CommandBarFlyout are compound types not in TOML.
         if let Some(ref fly) = self.flyout {
-            out.push(Binding::Prop(
-                Prop::FlyoutContent,
-                PropValue::Str(fly.text.clone()),
-            ));
+            // Rich content is mounted via the flyout_element slot (reconciler),
+            // so the text prop is only emitted for the text-only mode.
+            if fly.content.is_none() {
+                out.push(Binding::Prop(
+                    Prop::FlyoutContent,
+                    PropValue::Str(fly.text.clone()),
+                ));
+            }
             if fly.placement != FlyoutPlacementMode::default() {
                 out.push(Binding::Prop(
                     Prop::FlyoutPlacement,
                     PropValue::I32(fly.placement.0),
+                ));
+            }
+            if fly.open {
+                out.push(Binding::Prop(Prop::FlyoutOpen, PropValue::Bool(true)));
+            }
+            if let Some(cb) = &fly.on_closed {
+                out.push(Binding::Event(
+                    Event::FlyoutClosed,
+                    Some(EventHandler::Unit(cb.clone())),
                 ));
             }
         }
@@ -125,10 +144,10 @@ impl Button {
     }
 
     pub fn flyout(mut self, text: impl Into<String>) -> Self {
-        self.flyout = Some(FlyoutDef {
-            text: text.into(),
-            placement: FlyoutPlacementMode::default(),
-        });
+        self.flyout = Some(FlyoutDef::text(
+            text.into(),
+            FlyoutPlacementMode::default(),
+        ));
         self
     }
 
@@ -137,10 +156,32 @@ impl Button {
         text: impl Into<String>,
         placement: FlyoutPlacementMode,
     ) -> Self {
-        self.flyout = Some(FlyoutDef {
-            text: text.into(),
-            placement,
-        });
+        self.flyout = Some(FlyoutDef::text(text.into(), placement));
+        self
+    }
+
+    /// Attach a rich element flyout. The subtree is mounted into the flyout
+    /// content and shown at the button using `placement`.
+    pub fn flyout_element(mut self, content: impl Into<Element>, placement: FlyoutPlacementMode) -> Self {
+        self.flyout = Some(FlyoutDef::element(content.into(), placement));
+        self
+    }
+
+    /// Request the attached flyout to open (`ShowAt`) or close (`Hide`).
+    /// Light dismiss and Esc still close it and fire `on_flyout_closed`.
+    pub fn flyout_open(mut self, open: bool) -> Self {
+        if let Some(fly) = &mut self.flyout {
+            fly.open = open;
+        }
+        self
+    }
+
+    /// Callback fired when the attached flyout closes (light dismiss, Esc,
+    /// or programmatic hide) - use it to sync external open state.
+    pub fn on_flyout_closed(mut self, f: impl IntoUnitCallback) -> Self {
+        if let Some(fly) = &mut self.flyout {
+            fly.on_closed = Some(f.into_unit_callback());
+        }
         self
     }
 

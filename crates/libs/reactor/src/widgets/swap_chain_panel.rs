@@ -46,7 +46,7 @@ impl SwapChainPanelHandle {
     pub fn on_composition_scale_changed(
         &self,
         f: impl Fn(f32, f32) + 'static,
-    ) -> Result<windows_core::EventRevoker> {
+    ) -> Result<EventRevoker> {
         let panel: bindings::ISwapChainPanel = self.0.cast()?;
         panel.CompositionScaleChanged(move |sender, _| {
             if let Some(sender) = sender.as_ref() {

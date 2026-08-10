@@ -1143,6 +1143,22 @@ pub struct RenderCompleteInfo {
     pub elements_created: u64,
 }
 
+// DeepX perf diagnostic: optional per-render observer (UI thread only).
+// Registered via [`set_render_observer`]; invoked after every reconcile pass
+// with the same payload the `render_complete` callback receives.
+// The observer must NOT call `set_render_observer` from inside the callback
+// (would re-borrow the thread-local slot). Registration from another thread
+// silently targets that thread's slot — register on the UI thread.
+thread_local! {
+    static RENDER_OBSERVER: RefCell<Option<Box<dyn Fn(&RenderCompleteInfo) + 'static>>> =
+        const { RefCell::new(None) };
+}
+
+/// Install (or clear, with `None`) the per-render observer.
+pub fn set_render_observer(observer: Option<Box<dyn Fn(&RenderCompleteInfo) + 'static>>) {
+    RENDER_OBSERVER.with(|slot| *slot.borrow_mut() = observer);
+}
+
 struct StatsAccumulator {
     window_start: Cell<Instant>,
     tree_build_sum_ms: Cell<f64>,
@@ -1571,6 +1587,34 @@ fn render_once_inner<B: Backend + 'static, D: Dispatcher + 'static>(
 
     inner.render_count.set(inner.render_count.get() + 1);
 
+    // DeepX perf diagnostic: log slow renders (gate on DEEPX_PERF_LOG).
+    // tree_build = app() Element 树构建；reconcile = 新旧树 diff + XAML
+    // 应用；effects = use_effect 刷新。慢渲染（>3ms）写日志，用于定位
+    // 持续高 CPU 的成本构成（如 ChatView 全量重建 vs 组件跳过是否生效）。
+    if let Ok(path) = std::env::var("DEEPX_PERF_LOG") {
+        if !path.is_empty() && (tree_build_ms + reconcile_ms + effects_ms) > 3.0 {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = writeln!(
+                    f,
+                    "{} render={} tree={:.1}ms reconcile={:.1}ms effects={:.1}ms diffed={} skipped={} created={}",
+                    std::process::id(),
+                    inner.render_count.get(),
+                    tree_build_ms,
+                    reconcile_ms,
+                    effects_ms,
+                    last_diffed,
+                    last_skipped,
+                    last_created,
+                );
+            }
+        }
+    }
+
     let cb_taken = inner.post_render.borrow_mut().take();
     if let Some(cb) = cb_taken {
         cb(inner.root_id.get());
@@ -1594,6 +1638,19 @@ fn render_once_inner<B: Backend + 'static, D: Dispatcher + 'static>(
     inner.stats.set(new_stats);
 
     let rc_taken = inner.render_complete.borrow_mut().take();
+    // DeepX perf diagnostic: per-render observer (see set_render_observer).
+    RENDER_OBSERVER.with(|slot| {
+        if let Some(cb) = slot.borrow().as_ref() {
+            cb(&RenderCompleteInfo {
+                tree_build_ms,
+                reconcile_ms,
+                effects_ms,
+                elements_diffed: last_diffed,
+                elements_skipped: last_skipped,
+                elements_created: last_created,
+            });
+        }
+    });
     if let Some(cb) = rc_taken {
         let info = RenderCompleteInfo {
             tree_build_ms,
@@ -1607,6 +1664,31 @@ fn render_once_inner<B: Backend + 'static, D: Dispatcher + 'static>(
         let mut slot = inner.render_complete.borrow_mut();
         if slot.is_none() {
             *slot = Some(cb);
+        }
+    }
+
+    // ── DeepX perf diagnostic (debug builds only) ─────────────────
+    // Prints per-second render cost aggregates every 60 frames. Lets us
+    // quantify component cost without a profiler: tree build = Element
+    // tree construction, reconcile = diff + XAML commit, effects =
+    // effect flush. d/s/c = diffed/skipped/created element counts.
+    #[cfg(debug_assertions)]
+    {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static PERF_FRAME: AtomicU32 = AtomicU32::new(0);
+        let frame = PERF_FRAME.fetch_add(1, Ordering::Relaxed);
+        if frame % 60 == 59 {
+            let s = inner.stats.get();
+            eprintln!(
+                "perf frame={frame} fps={:.0} tree={:.2}ms rec={:.2}ms eff={:.2}ms d={} s={} c={}",
+                s.fps,
+                s.avg_tree_build_ms,
+                s.avg_reconcile_ms,
+                s.avg_effects_ms,
+                s.last_diffed,
+                s.last_skipped,
+                s.last_created,
+            );
         }
     }
 }

@@ -245,6 +245,105 @@ macro_rules! define_element {
                 self
             }
         }
+
+        // ── DeepX downstream extension ─────────────────────────
+        // 上游 capability 模型不为 Element 提供修饰器（Component/
+        // Empty 等变体无 modifiers）。DeepX 既有模式大量"函数返回
+        // Element 后再链式修饰"，依赖这些便捷方法；无修饰器的变体
+        // 静默忽略（返回原值）。与 `KeyExt for Element` 同思路。
+        impl Element {
+            pub fn modifiers_mut(&mut self) -> Option<&mut Modifiers> {
+                match self {
+                    $( Element::$variant(v) => Some(&mut v.modifiers), )*
+                    Element::TemplatedList(tl) => Some(&mut tl.modifiers),
+                    _ => None,
+                }
+            }
+
+            pub fn margin(mut self, value: impl Into<Thickness>) -> Self {
+                if let Some(m) = self.modifiers_mut() {
+                    m.margin = Some(value.into());
+                }
+                self
+            }
+
+            pub fn horizontal_alignment(mut self, value: HorizontalAlignment) -> Self {
+                if let Some(m) = self.modifiers_mut() {
+                    m.horizontal_alignment = Some(value);
+                }
+                self
+            }
+
+            pub fn vertical_alignment(mut self, value: VerticalAlignment) -> Self {
+                if let Some(m) = self.modifiers_mut() {
+                    m.vertical_alignment = Some(value);
+                }
+                self
+            }
+
+            pub fn grid_row(mut self, row: i32) -> Self {
+                if let Some(m) = self.modifiers_mut() {
+                    let mut p = m.grid.unwrap_or_default();
+                    p.row = row;
+                    m.grid = Some(p);
+                }
+                self
+            }
+
+            pub fn grid_column(mut self, column: i32) -> Self {
+                if let Some(m) = self.modifiers_mut() {
+                    let mut p = m.grid.unwrap_or_default();
+                    p.column = column;
+                    m.grid = Some(p);
+                }
+                self
+            }
+
+            pub fn transition(
+                mut self,
+                enter: Option<AnimationConfig>,
+                exit: Option<AnimationConfig>,
+            ) -> Self {
+                if let Some(m) = self.modifiers_mut() {
+                    let a = ensure_animations(m);
+                    a.enter_transition = enter;
+                    a.exit_transition = exit;
+                }
+                self
+            }
+
+            pub fn automation_name(mut self, name: impl Into<String>) -> Self {
+                if let Some(m) = self.modifiers_mut() {
+                    m.accessibility
+                        .get_or_insert_default()
+                        .automation_name = Some(name.into());
+                }
+                self
+            }
+
+            pub fn automation_id(mut self, id: impl Into<String>) -> Self {
+                if let Some(m) = self.modifiers_mut() {
+                    m.accessibility
+                        .get_or_insert_default()
+                        .automation_id = Some(id.into());
+                }
+                self
+            }
+
+            pub fn keyboard_accelerator(mut self, accel: KeyboardAccelerator) -> Self {
+                if let Some(m) = self.modifiers_mut() {
+                    m.keyboard_accelerators.push(accel);
+                }
+                self
+            }
+
+            pub fn on_pointer_pressed(mut self, f: impl IntoCallback<PointerEventInfo>) -> Self {
+                if let Some(m) = self.modifiers_mut() {
+                    ensure_pointer_handlers(m).on_pointer_pressed = Some(f.into_callback());
+                }
+                self
+            }
+        }
     };
 }
 
@@ -589,6 +688,12 @@ pub trait TextStyleExt: capability::TextStyle + Sized {
             value.into(),
             false,
         );
+        self
+    }
+
+    /// Sets a gradient foreground (e.g. shimmer). Overrides `foreground` when both set.
+    fn foreground_gradient(mut self, v: impl Into<GradientBrush>) -> Self {
+        capability::TextStyle::text_style_modifiers_mut(&mut self).foreground_gradient = Some(v.into());
         self
     }
 

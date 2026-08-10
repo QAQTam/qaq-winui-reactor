@@ -950,6 +950,10 @@ impl<B: Backend + 'static> Reconciler<B> {
             self.backend
                 .set_prop(id, Prop::Foreground, &PropValue::Color(*v));
         }
+        if let Some(v) = &mods.foreground_gradient {
+            self.backend
+                .set_prop(id, Prop::Foreground, &PropValue::Gradient(v.clone()));
+        }
         if let Some(v) = &mods.font_family {
             self.backend
                 .set_prop(id, Prop::FontFamily, &PropValue::Str(v.clone()));
@@ -1163,6 +1167,13 @@ impl<B: Backend + 'static> Reconciler<B> {
             &old.foreground,
             &new.foreground,
             PropValue::Color,
+        );
+        self.diff_opt_clone(
+            id,
+            Prop::Foreground,
+            &old.foreground_gradient,
+            &new.foreground_gradient,
+            PropValue::Gradient,
         );
         self.diff_opt_clone(
             id,

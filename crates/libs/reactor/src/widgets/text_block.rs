@@ -7,7 +7,9 @@ pub struct TextBlock {
     pub text: String,
     pub font_size: Option<f64>,
     pub font_weight: Option<u16>,
+    pub line_height: Option<f64>,
     pub max_lines: Option<i32>,
+    pub text_alignment: Option<TextAlignment>,
     pub text_trimming: Option<TextTrimming>,
     pub text_wrapping: TextWrapping,
     pub is_text_selection_enabled: bool,
@@ -31,8 +33,17 @@ impl Widget for TextBlock {
         if let Some(v) = self.font_weight {
             out.push(Binding::Prop(Prop::FontWeight, PropValue::U16(v)));
         }
+        if let Some(v) = self.line_height {
+            out.push(Binding::Prop(Prop::LineHeight, PropValue::F64(v)));
+        }
         if let Some(v) = self.max_lines {
             out.push(Binding::Prop(Prop::MaxLines, PropValue::I32(v)));
+        }
+        if let Some(v) = self.text_alignment {
+            out.push(Binding::Prop(
+                Prop::TextAlignment,
+                PropValue::I32(v.0),
+            ));
         }
         if let Some(v) = self.text_trimming {
             out.push(Binding::Prop(
@@ -65,6 +76,13 @@ impl TextBlock {
         self
     }
 
+    /// Minimum line box height in device-independent pixels. WinUI's default
+    /// MaxHeight line stacking strategy keeps larger glyphs from clipping.
+    pub fn line_height(mut self, v: f64) -> Self {
+        self.line_height = Some(v);
+        self
+    }
+
     pub fn wrap(mut self) -> Self {
         self.text_wrapping = TextWrapping::Wrap;
         self
@@ -78,6 +96,15 @@ impl TextBlock {
     pub fn text_trimming(mut self, value: TextTrimming) -> Self {
         self.text_trimming = Some(value);
         self
+    }
+
+    pub fn text_alignment(mut self, value: TextAlignment) -> Self {
+        self.text_alignment = Some(value);
+        self
+    }
+
+    pub fn center_aligned(self) -> Self {
+        self.text_alignment(TextAlignment::Center)
     }
 
     pub fn selectable(mut self) -> Self {
@@ -120,4 +147,27 @@ pub fn body(content: impl Into<String>) -> TextBlock {
 /// 12 px Normal - captions and secondary labels.
 pub fn caption(content: impl Into<String>) -> TextBlock {
     TextBlock::new(content).font_size(12.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_height_is_exposed_as_a_typed_binding() {
+        let widget = text_block("readable").line_height(22.0);
+        assert_eq!(
+            find_prop(&widget.bindings(), Prop::LineHeight),
+            Some(&PropValue::F64(22.0))
+        );
+    }
+
+    #[test]
+    fn rich_text_line_height_uses_the_same_property() {
+        let widget = RichTextBlock::new().line_height(22.0);
+        assert_eq!(
+            find_prop(&widget.bindings(), Prop::LineHeight),
+            Some(&PropValue::F64(22.0))
+        );
+    }
 }

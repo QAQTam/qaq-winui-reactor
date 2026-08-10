@@ -25,6 +25,12 @@ pub fn set_requested_theme(theme: RequestedTheme) {
     let _ = with_active_host(|h| h.set_requested_theme(theme));
 }
 
+/// Sets the inheritable font family on the active window's content root.
+/// Passing `None` restores Reactor's WinUI system-font default.
+pub fn set_font_family(family: Option<&str>) {
+    let _ = with_active_host(|host| host.set_font_family(family));
+}
+
 /// Apply or remove the backdrop material on the active window.
 ///
 /// This is a no-op if no window has been registered yet, so call it from within
@@ -42,6 +48,7 @@ pub fn set_backdrop(backdrop: Option<Backdrop>) {
 /// windows coexist on one UI thread without clobbering each other.
 pub(crate) struct HostWindowState {
     window: Window,
+    content_root: ContentControl,
     root_fe: RefCell<Option<FrameworkElement>>,
     /// Queued theme; applied once `root_fe` is available.
     pending_theme: Cell<Option<ElementTheme>>,
@@ -50,17 +57,40 @@ pub(crate) struct HostWindowState {
 }
 
 impl HostWindowState {
-    fn new(window: Window) -> Rc<Self> {
-        Rc::new(Self {
+    fn new(window: Window) -> Result<Rc<Self>> {
+        let content_root = ContentControl::new()?;
+        let control = content_root.cast::<IControl>()?;
+        control.SetHorizontalContentAlignment(HorizontalAlignment::Stretch)?;
+        control.SetVerticalContentAlignment(VerticalAlignment::Stretch)?;
+        let root_ui = content_root.cast::<UIElement>()?;
+        window.SetContent(&root_ui)?;
+        Ok(Rc::new(Self {
             window,
+            content_root,
             root_fe: RefCell::new(None),
             pending_theme: Cell::new(None),
             pending_tall: Cell::new(None),
-        })
+        }))
     }
 
     fn window(&self) -> &Window {
         &self.window
+    }
+
+    fn content_root(&self) -> &ContentControl {
+        &self.content_root
+    }
+
+    pub(crate) fn set_font_family(&self, family: Option<&str>) {
+        let family = family
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Segoe UI Variable");
+        if let Ok(control) = self.content_root.cast::<IControl>()
+            && let Ok(font) = FontFamily::CreateInstanceWithName(family)
+        {
+            let _ = control.SetFontFamily(&font);
+        }
     }
 
     /// Records the content root and applies any queued theme.
@@ -226,7 +256,7 @@ impl ReactorHost {
         F: FnOnce(&mut Reconciler<WinUIBackend>),
     {
         let (window, resolved_dip_size, initial_dpi) = create_window(title, size, constraints)?;
-        let state = HostWindowState::new(window);
+        let state = HostWindowState::new(window)?;
         let dispatcher = WinUIDispatcher::for_current_thread()?;
         let marshaller = dispatcher.marshaller();
         let backend = WinUIBackend::new();
@@ -253,12 +283,13 @@ impl ReactorHost {
                     };
                     if let Some(ui) = render_host.with_backend(|b| b.get_ui_element(rid)) {
                         let ui_element: UIElement = ui.cast().unwrap();
-                        let _ = state_for_post.window().SetContent(&ui_element);
+                        let _ = state_for_post.content_root().SetContent(&ui_element);
                         last_attached_for_hook.set(Some(rid));
 
                         if !subscribed.get() {
                             subscribed.set(true);
-                            if let Ok(fe) = ui_element.cast::<FrameworkElement>() {
+                            if let Ok(fe) = state_for_post.content_root().cast::<FrameworkElement>()
+                            {
                                 subscribe_actual_theme_changed(
                                     &fe,
                                     render_host.downgrade(),
@@ -292,6 +323,9 @@ impl ReactorHost {
                     }
                 }
                 None => {
+                    let _ = state_for_post
+                        .content_root()
+                        .SetContent(None::<&windows_core::IInspectable>);
                     last_attached_for_hook.set(None);
                 }
             }
@@ -328,6 +362,11 @@ impl ReactorHost {
     /// Set this window's content-root theme (light / dark / system default).
     pub fn set_requested_theme(&self, theme: RequestedTheme) {
         self.state.set_requested_theme(theme);
+    }
+
+    /// Set this window's inheritable content font family.
+    pub fn set_font_family(&self, family: Option<&str>) {
+        self.state.set_font_family(family);
     }
 
     /// Set this window's title-bar height option (tall / standard).

@@ -53,6 +53,9 @@ pub struct RichTextRun {
     pub is_bold: bool,
     pub is_italic: bool,
     pub is_strikethrough: bool,
+    /// Optional per-run foreground. When absent, the containing
+    /// `RichTextBlock` foreground continues to flow into the run.
+    pub foreground: Option<Color>,
     pub font_family: Option<String>,
     pub font_size: Option<f64>,
 }
@@ -102,6 +105,7 @@ pub struct RichTextBlock {
     pub modifiers: Modifiers,
     pub paragraphs: Vec<RichTextParagraph>,
     pub font_size: Option<f64>,
+    pub line_height: Option<f64>,
     pub is_text_selection_enabled: bool,
     pub text_wrapping: TextWrapping,
 }
@@ -123,6 +127,12 @@ impl RichTextBlock {
         self
     }
 
+    /// Minimum line box height in device-independent pixels.
+    pub fn line_height(mut self, size: f64) -> Self {
+        self.line_height = Some(size);
+        self
+    }
+
     pub fn selectable(mut self) -> Self {
         self.is_text_selection_enabled = true;
         self
@@ -140,6 +150,9 @@ impl Widget for RichTextBlock {
         let mut out = Vec::with_capacity(3);
         if let Some(fs) = self.font_size {
             out.push(Binding::Prop(Prop::FontSize, PropValue::F64(fs)));
+        }
+        if let Some(line_height) = self.line_height {
+            out.push(Binding::Prop(Prop::LineHeight, PropValue::F64(line_height)));
         }
         if self.is_text_selection_enabled {
             out.push(Binding::Prop(
@@ -187,6 +200,12 @@ pub trait Widget {
     fn pane_element(&self) -> Option<&Element> {
         None
     }
+    /// Optional element tree for a flyout content slot (e.g. rich flyout
+    /// hosted on a button). Mounted as a subtree outside the button's own
+    /// children and attached via `IFlyout.put_Content`.
+    fn flyout_element(&self) -> Option<&Element> {
+        None
+    }
     /// Optional post-mount callback. When present, the reconciler invokes it
     /// immediately after creation with the native element (`IInspectable`), or
     /// `None` if the backend exposes no native element for the control.
@@ -218,6 +237,40 @@ pub enum SelectionMode {
     Multiple,
     /// Range selection via Shift+Click and Ctrl+Click.
     Extended,
+}
+
+/// A one-shot scroll request for a virtualised list.
+///
+/// `generation` is supplied by the application. A request is executed again
+/// only when its generation or payload changes, which keeps ordinary renders
+/// from fighting the user's scroll position.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum TemplatedScrollRequest {
+    /// Move to the current tail even when the user has scrolled away.
+    ForceTail { generation: u64 },
+    /// Move to the current tail only if the user was following it before the
+    /// item-source update began.
+    FollowTail { generation: u64 },
+    /// Keep a realized row at `viewport_offset` after rows are inserted before it.
+    PreserveAnchor {
+        generation: u64,
+        index: usize,
+        viewport_offset: f64,
+    },
+    /// Restore an absolute vertical offset captured from this list earlier.
+    RestoreOffset {
+        generation: u64,
+        vertical_offset: f64,
+        following_tail: bool,
+    },
+}
+
+/// Observable viewport state for a virtualised list.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct TemplatedViewport {
+    pub vertical_offset: f64,
+    pub scrollable_height: f64,
+    pub following_tail: bool,
 }
 
 /// Erased adapter exposing the items of a [`TemplatedListElement`] to the
@@ -306,6 +359,11 @@ pub struct TemplatedListElement {
     pub items_impl: Rc<dyn TemplatedListImpl>,
     /// Drag-reorder callback: position `i` holds the original index now shown there.
     pub on_reorder: Option<Callback<Vec<usize>>>,
+    pub scroll_request: Option<TemplatedScrollRequest>,
+    pub on_top_reached: Option<Callback<()>>,
+    pub on_view_changed: Option<Callback<TemplatedViewport>>,
+    pub top_threshold: f64,
+    pub tail_threshold: f64,
 }
 
 impl Clone for TemplatedListElement {
@@ -320,6 +378,11 @@ impl Clone for TemplatedListElement {
             modifiers: self.modifiers.clone(),
             items_impl: Rc::clone(&self.items_impl),
             on_reorder: self.on_reorder.clone(),
+            scroll_request: self.scroll_request,
+            on_top_reached: self.on_top_reached.clone(),
+            on_view_changed: self.on_view_changed.clone(),
+            top_threshold: self.top_threshold,
+            tail_threshold: self.tail_threshold,
         }
     }
 }
@@ -344,6 +407,11 @@ impl PartialEq for TemplatedListElement {
             && self.allow_drop == other.allow_drop
             && self.modifiers == other.modifiers
             && Rc::ptr_eq(&self.items_impl, &other.items_impl)
+            && self.scroll_request == other.scroll_request
+            && self.on_top_reached == other.on_top_reached
+            && self.on_view_changed == other.on_view_changed
+            && self.top_threshold == other.top_threshold
+            && self.tail_threshold == other.tail_threshold
     }
 }
 
@@ -422,6 +490,11 @@ pub struct TemplatedListBuilder<T: 'static> {
     modifiers: Modifiers,
     element_key: Option<String>,
     on_reorder: Option<Callback<Vec<usize>>>,
+    scroll_request: Option<TemplatedScrollRequest>,
+    on_top_reached: Option<Callback<()>>,
+    on_view_changed: Option<Callback<TemplatedViewport>>,
+    top_threshold: f64,
+    tail_threshold: f64,
 }
 
 impl<T: 'static> TemplatedListBuilder<T> {
@@ -430,9 +503,21 @@ impl<T: 'static> TemplatedListBuilder<T> {
         items: Vec<T>,
         view: impl Fn(&T, usize) -> R + 'static,
     ) -> Self {
+        Self::new_rc(kind, Rc::new(items), view)
+    }
+
+    /// [`Self::new`] 的共享数据变体：接收调用方持有的 `Rc<Vec<T>>`。
+    /// 数据未变化时复用同一 Rc，`TemplatedListElement::same_items_as`
+    /// 按指针命中，reconciler 完全跳过已 realize 行的 rebuild 与 diff
+    /// （ChatView 流式更新关键路径：消除视口内行每帧全量重建）。
+    fn new_rc<R: Into<Element>>(
+        kind: TemplatedKind,
+        items: Rc<Vec<T>>,
+        view: impl Fn(&T, usize) -> R + 'static,
+    ) -> Self {
         Self {
             kind,
-            items: Rc::new(items),
+            items,
             view_builder: Rc::new(move |item, idx| view(item, idx).into()),
             key_selector: None,
             on_selection_changed: None,
@@ -444,6 +529,11 @@ impl<T: 'static> TemplatedListBuilder<T> {
             modifiers: Modifiers::default(),
             element_key: None,
             on_reorder: None,
+            scroll_request: None,
+            on_top_reached: None,
+            on_view_changed: None,
+            top_threshold: 48.0,
+            tail_threshold: 48.0,
         }
     }
 
@@ -488,6 +578,65 @@ impl<T: 'static> TemplatedListBuilder<T> {
         self
     }
 
+    /// Forces a one-shot scroll to the current tail.
+    pub fn force_tail(mut self, generation: u64) -> Self {
+        self.scroll_request = Some(TemplatedScrollRequest::ForceTail { generation });
+        self
+    }
+
+    /// Follows new tail content only while the user remains near the tail.
+    pub fn follow_tail(mut self, generation: u64) -> Self {
+        self.scroll_request = Some(TemplatedScrollRequest::FollowTail { generation });
+        self
+    }
+
+    /// Preserves a realized row's viewport position across a prefix insertion.
+    pub fn preserve_anchor(mut self, generation: u64, index: usize, viewport_offset: f64) -> Self {
+        self.scroll_request = Some(TemplatedScrollRequest::PreserveAnchor {
+            generation,
+            index,
+            viewport_offset,
+        });
+        self
+    }
+
+    /// Restores a previously observed absolute vertical offset.
+    pub fn restore_offset(
+        mut self,
+        generation: u64,
+        vertical_offset: f64,
+        following_tail: bool,
+    ) -> Self {
+        self.scroll_request = Some(TemplatedScrollRequest::RestoreOffset {
+            generation,
+            vertical_offset: vertical_offset.max(0.0),
+            following_tail,
+        });
+        self
+    }
+
+    /// Invokes `cb` once when scrolling crosses into the top threshold.
+    pub fn on_top_reached(mut self, cb: impl IntoCallback<()>) -> Self {
+        self.on_top_reached = Some(cb.into_callback());
+        self
+    }
+
+    /// Observes native viewport changes without disabling virtualization.
+    pub fn on_view_changed(mut self, cb: impl IntoCallback<TemplatedViewport>) -> Self {
+        self.on_view_changed = Some(cb.into_callback());
+        self
+    }
+
+    pub fn top_threshold(mut self, value: f64) -> Self {
+        self.top_threshold = value.max(0.0);
+        self
+    }
+
+    pub fn tail_threshold(mut self, value: f64) -> Self {
+        self.tail_threshold = value.max(0.0);
+        self
+    }
+
     pub fn with_key(mut self, k: impl Into<String>) -> Self {
         self.element_key = Some(k.into());
         self
@@ -521,6 +670,11 @@ impl<T: 'static> TemplatedListBuilder<T> {
             modifiers: self.modifiers,
             items_impl: Rc::new(cell),
             on_reorder: self.on_reorder,
+            scroll_request: self.scroll_request,
+            on_top_reached: self.on_top_reached,
+            on_view_changed: self.on_view_changed,
+            top_threshold: self.top_threshold,
+            tail_threshold: self.tail_threshold,
         })
     }
 }
@@ -556,6 +710,16 @@ pub fn list_view<T: 'static, R: Into<Element>>(
     view: impl Fn(&T, usize) -> R + 'static,
 ) -> TemplatedListBuilder<T> {
     TemplatedListBuilder::new(TemplatedKind::ListView, items, view)
+}
+
+/// [`list_view`] 的共享数据变体：`items` 由调用方持有（`Rc<Vec<T>>`）。
+/// 数据未变化时复用同一 Rc 可让 reconciler 的 `same_items_as` 指针命中，
+/// 完全跳过已 realize 行的 rebuild 与 diff（ChatView 流式更新的关键优化）。
+pub fn list_view_rc<T: 'static, R: Into<Element>>(
+    items: Rc<Vec<T>>,
+    view: impl Fn(&T, usize) -> R + 'static,
+) -> TemplatedListBuilder<T> {
+    TemplatedListBuilder::new_rc(TemplatedKind::ListView, items, view)
 }
 
 pub fn grid_view<T: 'static, R: Into<Element>>(

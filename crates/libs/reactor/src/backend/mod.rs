@@ -144,6 +144,7 @@ pub enum Prop {
     DisplayName,
     Fill,
     FlyoutContent,
+    FlyoutOpen,
     FlyoutPlacement,
     FontFamily,
     FontSize,
@@ -193,6 +194,7 @@ pub enum Prop {
     ItemKey,
     Items,
     LineEndpoints,
+    LineHeight,
     Margin,
     MaxColumns,
     MaxHeight,
@@ -243,6 +245,7 @@ pub enum Prop {
     Subtitle,
     Tall,
     Text,
+    TextAlignment,
     TextTrimming,
     TextWrapping,
     TextWrappingWrap,
@@ -265,6 +268,7 @@ pub enum PropValue {
     Icon(Icon),
     Thickness(Thickness),
     Color(Color),
+    Gradient(GradientBrush),
     Unset,
     GridLengths(Vec<GridLength>),
     ImageSource(ImageSource),
@@ -296,6 +300,7 @@ pub enum Event {
     CommandBarFlyoutClick,
     ColorChanged,
     Expanding,
+    FlyoutClosed,
     ItemClicked,
     ItemInvoked,
     NavigationDisplayModeChanged,
@@ -472,8 +477,29 @@ pub trait Backend {
     /// Set a mounted element tree as the pane content of a `SplitView`.
     /// Pass `None` to clear a previously set pane element.
     fn set_pane_element(&mut self, _id: ControlId, _pane_id: Option<ControlId>) {}
+    fn set_flyout_content(&mut self, _id: ControlId, _content_id: Option<ControlId>) {}
 
     fn scroll_templated_to_index(&mut self, _id: ControlId, _index: i32) {}
+
+    /// Updates scroll observation without replacing the native event handler.
+    fn configure_templated_scroll(
+        &mut self,
+        _id: ControlId,
+        _top_threshold: f64,
+        _tail_threshold: f64,
+        _on_top_reached: Option<Callback<()>>,
+        _on_view_changed: Option<Callback<TemplatedViewport>>,
+    ) {
+    }
+
+    /// Freezes any state needed by `request` before the item source changes.
+    fn prepare_templated_scroll(&mut self, _id: ControlId, _request: TemplatedScrollRequest) {}
+
+    /// Applies the request prepared before the item-source update. Returns
+    /// `false` when a native template/container is not ready and a retry is needed.
+    fn apply_prepared_templated_scroll(&mut self, _id: ControlId) -> bool {
+        true
+    }
 
     fn attach_templated_selection_changed(&mut self, _id: ControlId, _handler: Callback<i32>) {}
 

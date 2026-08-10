@@ -30,12 +30,12 @@ impl ImageHandle {
     pub fn on_rasterization_scale_changed(
         &self,
         f: impl Fn(f64) + 'static,
-    ) -> Result<windows_core::EventRevoker> {
+    ) -> Result<EventRevoker> {
         let element: bindings::IFrameworkElement = self.0.cast()?;
         let f = Rc::new(f);
         // Owned by the `Loaded` closure so it is revoked when the returned
         // `Loaded` revoker is dropped.
-        let changed: Rc<RefCell<Option<windows_core::EventRevoker>>> = Rc::new(RefCell::new(None));
+        let changed: Rc<RefCell<Option<EventRevoker>>> = Rc::new(RefCell::new(None));
         element.Loaded(move |sender, _| {
             let Some(element) = sender.as_ref().and_then(|s| s.cast::<bindings::IUIElement>().ok())
             else {
@@ -93,6 +93,11 @@ pub enum ImageSource {
     #[default]
     None,
     Uri(String),
+    /// UTF-8 SVG markup decoded by WinUI's native `SvgImageSource`.
+    ///
+    /// This uses the platform's secure static SVG mode; it does not host HTML,
+    /// script, animation, or a web view.
+    Svg(String),
     Surface(SurfaceImageSource),
 }
 
@@ -100,6 +105,11 @@ impl ImageSource {
     /// Creates a source from a URI.
     pub fn uri(source: impl Into<String>) -> Self {
         Self::Uri(source.into())
+    }
+
+    /// Creates an in-memory SVG source without requiring a temporary file.
+    pub fn svg(source: impl Into<String>) -> Self {
+        Self::Svg(source.into())
     }
 
     pub fn is_none(&self) -> bool {

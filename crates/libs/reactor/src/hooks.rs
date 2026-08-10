@@ -6,7 +6,7 @@ use bindings::*;
 /// RAII timer wrapper; stops and unhooks on drop.
 pub struct DispatcherTimer {
     timer: DispatcherQueueTimer,
-    _tick_revoker: windows_core::EventRevoker,
+    _tick_revoker: EventRevoker,
 }
 
 impl DispatcherTimer {
@@ -60,7 +60,7 @@ impl Drop for DispatcherTimer {
 
 /// RAII handle for a `CompositionTarget::Rendering` subscription; detaches on drop.
 pub struct Rendering {
-    _revoker: windows_core::EventRevoker,
+    _revoker: EventRevoker,
 }
 
 /// Subscribe `f` to `CompositionTarget::Rendering` for the current thread.

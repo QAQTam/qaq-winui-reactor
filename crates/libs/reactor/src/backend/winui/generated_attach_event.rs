@@ -7,7 +7,7 @@ pub fn dispatch(
     handle: &Handle,
     event: Event,
     handler: &EventHandler,
-) -> Option<Vec<windows_core::EventRevoker>> {
+) -> Option<Vec<EventRevoker>> {
     let mut revokers = Vec::new();
     match (event, handle) {
         (Event::ItemClicked, Handle::BreadcrumbBar(h)) => {

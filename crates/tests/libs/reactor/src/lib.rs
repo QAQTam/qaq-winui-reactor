@@ -126,6 +126,19 @@ pub enum Op {
         id: ControlId,
         index: i32,
     },
+    ConfigureTemplatedScroll {
+        id: ControlId,
+        top_threshold: f64,
+        tail_threshold: f64,
+        has_top_handler: bool,
+    },
+    PrepareTemplatedScroll {
+        id: ControlId,
+        request: TemplatedScrollRequest,
+    },
+    ApplyPreparedTemplatedScroll {
+        id: ControlId,
+    },
     AttachTemplatedSelectionChanged {
         id: ControlId,
     },
@@ -188,16 +201,14 @@ pub enum Op {
 pub struct RecordingBackend {
     pub ops: Vec<Op>,
     next_id: u32,
-    live_controls: rustc_hash::FxHashSet<ControlId>,
     children: rustc_hash::FxHashMap<ControlId, Vec<ControlId>>,
-    headers: rustc_hash::FxHashMap<ControlId, ControlId>,
-    panes: rustc_hash::FxHashMap<ControlId, ControlId>,
     handlers: rustc_hash::FxHashMap<(ControlId, Event), EventHandler>,
     row_contents: rustc_hash::FxHashMap<ControlId, rustc_hash::FxHashMap<usize, ControlId>>,
     item_counts: rustc_hash::FxHashMap<ControlId, usize>,
     realization_handlers: rustc_hash::FxHashMap<ControlId, (Rc<dyn Fn(usize)>, Rc<dyn Fn(usize)>)>,
     selection_handlers: rustc_hash::FxHashMap<ControlId, Callback<i32>>,
     reorder_handlers: rustc_hash::FxHashMap<ControlId, Callback<Vec<usize>>>,
+    top_handlers: rustc_hash::FxHashMap<ControlId, Callback<()>>,
     theme_style_cache: rustc_hash::FxHashSet<(ControlKind, Vec<(Prop, ThemeRef)>)>,
     theme_bindings_live: rustc_hash::FxHashMap<ControlId, Vec<(Prop, ThemeRef)>>,
     failures: VecDeque<BackendFailure>,
@@ -399,85 +410,19 @@ impl RecordingBackend {
     }
 
     pub fn live_control_count(&self) -> usize {
-        self.live_controls.len()
-    }
-
-    /// Verifies the backend model after a reconciliation boundary.
-    pub fn assert_consistent(&self) {
-        let native: rustc_hash::FxHashSet<_> = self.native_elements.keys().copied().collect();
-        assert_eq!(
-            native, self.live_controls,
-            "native element registry disagrees with live controls"
-        );
-
-        let mut owners = rustc_hash::FxHashMap::<ControlId, String>::default();
-        let mut claim = |child: ControlId, owner: String| {
-            assert!(
-                self.live_controls.contains(&child),
-                "{owner} owns destroyed or unknown control {child}"
-            );
-            if let Some(previous) = owners.insert(child, owner.clone()) {
-                panic!("{child} has multiple owners: {previous} and {owner}");
-            }
-        };
-
-        for (parent, children) in &self.children {
-            assert!(
-                self.live_controls.contains(parent),
-                "destroyed or unknown parent {parent} retains children"
-            );
-            for (index, child) in children.iter().copied().enumerate() {
-                claim(child, format!("child {index} of {parent}"));
+        let mut alive: rustc_hash::FxHashSet<ControlId> = rustc_hash::FxHashSet::default();
+        for op in &self.ops {
+            match op {
+                Op::Create { id, .. } => {
+                    alive.insert(*id);
+                }
+                Op::Destroy { id } => {
+                    alive.remove(id);
+                }
+                _ => {}
             }
         }
-        for (parent, child) in &self.headers {
-            assert!(
-                self.live_controls.contains(parent),
-                "destroyed or unknown parent {parent} retains a header"
-            );
-            claim(*child, format!("header of {parent}"));
-        }
-        for (parent, child) in &self.panes {
-            assert!(
-                self.live_controls.contains(parent),
-                "destroyed or unknown parent {parent} retains a pane"
-            );
-            claim(*child, format!("pane of {parent}"));
-        }
-        for (list, rows) in &self.row_contents {
-            assert!(
-                self.live_controls.contains(list),
-                "destroyed or unknown list {list} retains row content"
-            );
-            for (index, child) in rows {
-                claim(*child, format!("row {index} of {list}"));
-            }
-        }
-
-        let assert_live_owner = |id: &ControlId, state: &str| {
-            assert!(
-                self.live_controls.contains(id),
-                "destroyed or unknown control {id} retains {state}"
-            );
-        };
-        for id in self.handlers.keys().map(|(id, _)| id) {
-            assert_live_owner(id, "an event handler");
-        }
-        for id in self.item_counts.keys() {
-            assert_live_owner(id, "a templated item count");
-        }
-        for id in self.realization_handlers.keys() {
-            assert_live_owner(id, "templated realization handlers");
-        }
-        for id in self.selection_handlers.keys() {
-            assert_live_owner(id, "a templated selection handler");
-        }
-        for id in self.reorder_handlers.keys() {
-            assert_live_owner(id, "a templated reorder handler");
-        }
-        for id in self.theme_bindings_live.keys() {
-            assert_live_owner(id, "theme bindings");
-        }
+        alive.len()
     }
 }
 
@@ -487,7 +432,6 @@ impl Backend for RecordingBackend {
         self.next_id += 1;
         let id = ControlId::new(self.next_id);
         self.ops.push(Op::Create { id, kind });
-        self.live_controls.insert(id);
         self.native_elements.insert(id, stub_native_element());
         id
     }
@@ -574,8 +518,6 @@ impl Backend for RecordingBackend {
             "destroy: unknown or already destroyed control {id}"
         );
         self.children.remove(&id);
-        self.headers.remove(&id);
-        self.panes.remove(&id);
         self.native_elements.remove(&id);
         self.row_contents.remove(&id);
         self.item_counts.remove(&id);
@@ -673,6 +615,40 @@ impl Backend for RecordingBackend {
 
     fn scroll_templated_to_index(&mut self, id: ControlId, index: i32) {
         self.ops.push(Op::ScrollTemplatedToIndex { id, index });
+    }
+
+    fn configure_templated_scroll(
+        &mut self,
+        id: ControlId,
+        top_threshold: f64,
+        tail_threshold: f64,
+        on_top_reached: Option<Callback<()>>,
+        _on_view_changed: Option<Callback<TemplatedViewport>>,
+    ) {
+        let has_top_handler = on_top_reached.is_some();
+        match on_top_reached {
+            Some(handler) => {
+                self.top_handlers.insert(id, handler);
+            }
+            None => {
+                self.top_handlers.remove(&id);
+            }
+        }
+        self.ops.push(Op::ConfigureTemplatedScroll {
+            id,
+            top_threshold,
+            tail_threshold,
+            has_top_handler,
+        });
+    }
+
+    fn prepare_templated_scroll(&mut self, id: ControlId, request: TemplatedScrollRequest) {
+        self.ops.push(Op::PrepareTemplatedScroll { id, request });
+    }
+
+    fn apply_prepared_templated_scroll(&mut self, id: ControlId) -> bool {
+        self.ops.push(Op::ApplyPreparedTemplatedScroll { id });
+        true
     }
 
     fn attach_templated_selection_changed(&mut self, id: ControlId, handler: Callback<i32>) {

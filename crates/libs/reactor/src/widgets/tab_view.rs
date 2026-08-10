@@ -4,6 +4,9 @@ use super::*;
 pub struct TabItem {
     pub key: Option<String>,
     pub header: String,
+    /// Optional declarative header content. `header` remains the text fallback
+    /// and stable label used by close callbacks.
+    pub header_element: Option<Element>,
     pub content: Element,
     /// When `Some`, drives `ITabViewItem::IsClosable`. Defaults to the
     /// platform default (closable) when left as `None`.
@@ -14,6 +17,7 @@ impl TabItem {
         Self {
             key: None,
             header: header.into(),
+            header_element: None,
             content: content.into(),
             is_closable: None,
         }
@@ -21,6 +25,11 @@ impl TabItem {
     /// Override the per-tab close button visibility (`IsClosable`).
     pub fn closable(mut self, v: bool) -> Self {
         self.is_closable = Some(v);
+        self
+    }
+
+    pub fn header_element(mut self, value: impl Into<Element>) -> Self {
+        self.header_element = Some(value.into());
         self
     }
 }

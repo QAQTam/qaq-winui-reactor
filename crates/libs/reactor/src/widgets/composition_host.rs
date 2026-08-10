@@ -34,11 +34,11 @@ impl CompositionHostHandle {
     pub fn on_rasterization_scale_changed(
         &self,
         f: impl Fn(f64) + 'static,
-    ) -> Result<windows_core::EventRevoker> {
+    ) -> Result<EventRevoker> {
         let element: bindings::IFrameworkElement = self.0.cast()?;
         let f = Rc::new(f);
         // Revoked when the returned Loaded revoker is dropped.
-        let changed: Rc<RefCell<Option<windows_core::EventRevoker>>> = Rc::new(RefCell::new(None));
+        let changed: Rc<RefCell<Option<EventRevoker>>> = Rc::new(RefCell::new(None));
         element.Loaded(move |sender, _| {
             let Some(element) = sender
                 .as_ref()

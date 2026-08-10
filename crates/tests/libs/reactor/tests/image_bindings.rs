@@ -32,6 +32,17 @@ fn image_new_accepts_uri_conversions() {
 }
 
 #[test]
+fn image_accepts_in_memory_svg_markup() {
+    let source = ImageSource::svg("<svg xmlns='http://www.w3.org/2000/svg'/>");
+    let image = Image::new(source.clone());
+    assert_eq!(
+        image.source,
+        ImageSource::Svg("<svg xmlns='http://www.w3.org/2000/svg'/>".to_string())
+    );
+    assert!(!source.is_none());
+}
+
+#[test]
 fn default_emits_no_image_source() {
     let image = Image::default();
     assert_eq!(image_source(&image), None);

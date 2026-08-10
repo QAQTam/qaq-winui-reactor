@@ -287,6 +287,9 @@ impl LayoutAnimationConfig {
 pub struct AnimationConfig {
     pub opacity: Option<f64>,
     pub scale: Option<f64>,
+    /// 位移目标（Visual.Translation，Vector3）：入场/出场/一次性位移用。
+    /// 对 enter 是起点（从该偏移滑入到 0）；对 exit 是终点（从 0 滑出到该偏移）。
+    pub translation: Option<windows_numerics::Vector3>,
     pub duration: Duration,
     pub easing: Easing,
 }
@@ -296,6 +299,7 @@ impl Default for AnimationConfig {
         Self {
             opacity: None,
             scale: None,
+            translation: None,
             duration: Duration::from_millis(300),
             easing: Easing::EaseOut,
         }
@@ -317,6 +321,22 @@ impl AnimationConfig {
             opacity: Some(0.0),
             duration,
             easing: Easing::EaseIn,
+            ..Self::default()
+        }
+    }
+
+    /// 从下往上滑入（Win11 菜单条目风格）：opacity 0→1 + translation
+    /// (0, y, 0)→0。`y` 为起始下移量（px）。
+    pub fn slide_up(duration: Duration, y: f64) -> Self {
+        Self {
+            opacity: Some(1.0),
+            translation: Some(windows_numerics::Vector3 {
+                x: 0.0,
+                y: y as f32,
+                z: 0.0,
+            }),
+            duration,
+            easing: Easing::EaseOut,
             ..Self::default()
         }
     }
@@ -467,6 +487,49 @@ impl ThemeRef {
     }
 }
 
+/// A single gradient stop: normalized `offset` (0.0–1.0) + `color`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradientStop {
+    pub offset: f64,
+    pub color: Color,
+}
+
+/// Linear-gradient spec for the `foreground_gradient` modifier slot.
+///
+/// Positions are normalized coordinates; `start`/`end` default to `(0,0)` →
+/// `(1,0)` (left-to-right). Animated callers rebuild this value per frame:
+/// the backend creates a fresh `LinearGradientBrush` on each diff apply
+/// (cheaper than mutating N `Run` foregrounds for shimmer).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradientBrush {
+    pub stops: Vec<GradientStop>,
+    /// Normalized start point, default `(0.0, 0.0)`.
+    pub start: (f64, f64),
+    /// Normalized end point, default `(1.0, 0.0)`.
+    pub end: (f64, f64),
+}
+
+impl GradientBrush {
+    /// Left-to-right linear gradient over `(offset, color)` stops.
+    pub fn linear(stops: impl IntoIterator<Item = (f64, Color)>) -> Self {
+        Self {
+            stops: stops
+                .into_iter()
+                .map(|(offset, color)| GradientStop { offset, color })
+                .collect(),
+            start: (0.0, 0.0),
+            end: (1.0, 0.0),
+        }
+    }
+
+    /// Replaces the normalized start/end points (e.g. vertical: `(0,1)`→`(0,0)`).
+    pub fn with_points(mut self, start: (f64, f64), end: (f64, f64)) -> Self {
+        self.start = start;
+        self.end = end;
+        self
+    }
+}
+
 /// Brush slot backed by a literal [`Color`] or a [`ThemeRef`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BrushBinding {
@@ -567,6 +630,8 @@ pub struct Modifiers {
     pub opacity: Option<f64>,
     pub background: Option<Color>,
     pub foreground: Option<Color>,
+    /// Gradient foreground (shimmer etc.); wins over `foreground` when both set.
+    pub foreground_gradient: Option<GradientBrush>,
     pub font_family: Option<String>,
     pub font_size: Option<f64>,
     pub theme_bindings: Option<Box<FxHashMap<Prop, ThemeRef>>>,
@@ -598,6 +663,7 @@ impl Modifiers {
             && self.opacity.is_none()
             && self.background.is_none()
             && self.foreground.is_none()
+            && self.foreground_gradient.is_none()
             && self.font_family.is_none()
             && self.font_size.is_none()
             && self.theme_bindings.as_ref().is_none_or(|m| m.is_empty())

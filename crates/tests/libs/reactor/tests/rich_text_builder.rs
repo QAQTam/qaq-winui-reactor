@@ -1,4 +1,4 @@
-use windows_reactor::{RichTextBlock, RichTextInline, RichTextParagraph, RichTextRun};
+use windows_reactor::{Color, RichTextBlock, RichTextInline, RichTextParagraph, RichTextRun};
 
 #[test]
 fn run_plain_creates_default_styled_run() {
@@ -6,7 +6,15 @@ fn run_plain_creates_default_styled_run() {
     assert_eq!(r.text, "hello");
     assert!(!r.is_bold);
     assert!(!r.is_italic);
+    assert!(r.foreground.is_none());
     assert!(r.font_family.is_none());
+}
+
+#[test]
+fn run_can_carry_a_token_foreground() {
+    let mut r = RichTextRun::plain("fn");
+    r.foreground = Some(Color::rgb(197, 134, 192));
+    assert_eq!(r.foreground, Some(Color::rgb(197, 134, 192)));
 }
 
 #[test]

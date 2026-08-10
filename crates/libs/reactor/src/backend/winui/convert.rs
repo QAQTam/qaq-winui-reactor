@@ -30,6 +30,30 @@ pub(super) fn solid_brush(c: Color) -> Result<bindings::SolidColorBrush> {
     Ok(brush)
 }
 
+/// Builds a fresh `LinearGradientBrush` from a [`GradientBrush`] spec.
+/// Called on every diff apply — callers animating a shimmer rebuild the spec
+/// per frame, so the brush itself is created per frame (cheap relative to
+/// per-character Run updates).
+pub(super) fn gradient_brush(g: &GradientBrush) -> Result<bindings::Brush> {
+    let brush = bindings::LinearGradientBrush::new()?;
+    brush.SetStartPoint(bindings::Point {
+        x: g.start.0 as f32,
+        y: g.start.1 as f32,
+    })?;
+    brush.SetEndPoint(bindings::Point {
+        x: g.end.0 as f32,
+        y: g.end.1 as f32,
+    })?;
+    let stops = brush.cast::<bindings::IGradientBrush>()?.GradientStops()?;
+    for s in &g.stops {
+        let stop = bindings::GradientStop::new()?;
+        stop.SetColor(s.color)?;
+        stop.SetOffset(s.offset)?;
+        stops.Append(&stop)?;
+    }
+    Ok(brush.cast()?)
+}
+
 pub(super) fn string_as_textblock(s: &str) -> Result<bindings::TextBlock> {
     let tb = bindings::TextBlock::new()?;
     tb.SetText(s)?;
@@ -60,10 +84,34 @@ fn build_uri_image_source(uri: &str) -> Result<bindings::ImageSource> {
     }
 }
 
+fn new_memory_stream() -> Result<bindings::InMemoryRandomAccessStream> {
+    static SHARED: windows_core::imp::FactoryCache<
+        bindings::InMemoryRandomAccessStream,
+        windows_core::imp::IGenericFactory,
+    > = windows_core::imp::FactoryCache::new();
+    SHARED.call(|factory| factory.ActivateInstance::<bindings::InMemoryRandomAccessStream>())
+}
+
+fn build_svg_image_source(svg: &str) -> Result<bindings::ImageSource> {
+    let stream = new_memory_stream()?;
+    let writer = bindings::DataWriter::CreateDataWriter(&stream)?;
+    writer.WriteBytes(svg.as_bytes())?;
+    writer.StoreAsync()?.join()?;
+    writer.DetachStream()?;
+    stream.Seek(0)?;
+
+    let source = bindings::SvgImageSource::new()?;
+    // The Image keeps the SvgImageSource alive while WinUI completes its native
+    // decode. Avoid blocking the UI thread on the decode operation itself.
+    let _decode = source.SetSourceAsync(&stream)?;
+    source.cast()
+}
+
 pub(super) fn build_image_source(source: &ImageSource) -> Result<Option<bindings::ImageSource>> {
     match source {
         ImageSource::None => Ok(None),
         ImageSource::Uri(uri) => build_uri_image_source(uri).map(Some),
+        ImageSource::Svg(svg) => build_svg_image_source(svg).map(Some),
         ImageSource::Surface(source) => source.image_source().map(Some),
     }
 }
