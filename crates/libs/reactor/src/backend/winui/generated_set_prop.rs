@@ -520,6 +520,15 @@ pub fn dispatch(handle: &Handle, prop: Prop, value: &PropValue) -> Result<bool> 
         (Prop::VerticalScrollBarVisibility, PropValue::I32(v), Handle::ScrollViewer(h)) => {
             h.SetVerticalScrollBarVisibility(ScrollBarVisibility(*v))?;
         }
+        (Prop::ScrollViewerZoomMode, PropValue::I32(v), Handle::ScrollViewer(h)) => {
+            h.SetZoomMode(bindings::ScrollViewerZoomMode(*v))?;
+        }
+        (Prop::MinZoomFactor, PropValue::F64(v), Handle::ScrollViewer(h)) => {
+            h.SetMinZoomFactor(*v)?;
+        }
+        (Prop::MaxZoomFactor, PropValue::F64(v), Handle::ScrollViewer(h)) => {
+            h.SetMaxZoomFactor(*v)?;
+        }
         (Prop::YearVisible, PropValue::Bool(v), Handle::DatePicker(h)) => {
             h.SetYearVisible(*v)?;
         }

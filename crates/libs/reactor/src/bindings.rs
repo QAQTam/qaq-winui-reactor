@@ -13720,6 +13720,33 @@ impl IScrollViewer {
             .ok()
         }
     }
+    pub(crate) fn SetZoomMode(&self, value: ScrollViewerZoomMode) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetZoomMode)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub(crate) fn SetMinZoomFactor(&self, value: f64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetMinZoomFactor)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
+    pub(crate) fn SetMaxZoomFactor(&self, value: f64) -> windows_core::Result<()> {
+        unsafe {
+            (windows_core::Interface::vtable(self).SetMaxZoomFactor)(
+                windows_core::Interface::as_raw(self),
+                value,
+            )
+            .ok()
+        }
+    }
     pub(crate) fn VerticalOffset(&self) -> windows_core::Result<f64> {
         unsafe {
             let mut result__ = core::mem::zeroed();
@@ -13875,8 +13902,10 @@ pub struct IScrollViewer_Vtbl {
     SetHorizontalScrollMode: usize,
     VerticalScrollMode: usize,
     SetVerticalScrollMode: usize,
-    ZoomMode: usize,
-    SetZoomMode: usize,
+    pub ZoomMode:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut ScrollViewerZoomMode) -> windows_core::HRESULT,
+    pub SetZoomMode:
+        unsafe extern "system" fn(*mut core::ffi::c_void, ScrollViewerZoomMode) -> windows_core::HRESULT,
     HorizontalSnapPointsAlignment: usize,
     SetHorizontalSnapPointsAlignment: usize,
     VerticalSnapPointsAlignment: usize,
@@ -13901,11 +13930,16 @@ pub struct IScrollViewer_Vtbl {
     ComputedVerticalScrollBarVisibility: usize,
     pub ExtentHeight:
         unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
-    MinZoomFactor: usize,
-    SetMinZoomFactor: usize,
-    MaxZoomFactor: usize,
-    SetMaxZoomFactor: usize,
-    ZoomFactor: usize,
+    pub MinZoomFactor:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    pub SetMinZoomFactor:
+        unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,
+    pub MaxZoomFactor:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
+    pub SetMaxZoomFactor:
+        unsafe extern "system" fn(*mut core::ffi::c_void, f64) -> windows_core::HRESULT,
+    pub ZoomFactor:
+        unsafe extern "system" fn(*mut core::ffi::c_void, *mut f64) -> windows_core::HRESULT,
     ZoomSnapPoints: usize,
     TopLeftHeader: usize,
     SetTopLeftHeader: usize,
@@ -22448,6 +22482,16 @@ impl ScrollBarVisibility {
     pub const Visible: Self = Self(3);
 }
 impl windows_core::TypeKind for ScrollBarVisibility {
+    type TypeKind = windows_core::CopyType;
+}
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ScrollViewerZoomMode(pub i32);
+impl ScrollViewerZoomMode {
+    pub const Disabled: Self = Self(0);
+    pub const Enabled: Self = Self(1);
+}
+impl windows_core::TypeKind for ScrollViewerZoomMode {
     type TypeKind = windows_core::CopyType;
 }
 impl windows_core::RuntimeType for ScrollBarVisibility {

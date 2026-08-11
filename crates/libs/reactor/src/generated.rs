@@ -645,7 +645,7 @@ pub fn scroll_view_bindings(w: &ScrollView) -> PropBindings {
     ]
 }
 pub fn scroll_viewer_bindings(w: &ScrollViewer) -> PropBindings {
-    vec![
+    let mut out = vec![
         Binding::Prop(
             Prop::HorizontalScrollBarVisibility,
             PropValue::I32(w.horizontal_scroll_bar_visibility.0),
@@ -654,7 +654,17 @@ pub fn scroll_viewer_bindings(w: &ScrollViewer) -> PropBindings {
             Prop::VerticalScrollBarVisibility,
             PropValue::I32(w.vertical_scroll_bar_visibility.0),
         ),
-    ]
+    ];
+    if let Some(v) = w.zoom_mode {
+        out.push(Binding::Prop(Prop::ScrollViewerZoomMode, PropValue::I32(v)));
+    }
+    if let Some(v) = w.min_zoom_factor {
+        out.push(Binding::Prop(Prop::MinZoomFactor, PropValue::F64(v)));
+    }
+    if let Some(v) = w.max_zoom_factor {
+        out.push(Binding::Prop(Prop::MaxZoomFactor, PropValue::F64(v)));
+    }
+    out
 }
 pub fn selector_bar_bindings(w: &SelectorBar) -> PropBindings {
     vec![Binding::Event(

@@ -202,6 +202,7 @@ pub enum Prop {
     Maximum,
     MaxRating,
     MaxWidth,
+    MaxZoomFactor,
     MenuFlyoutItems,
     MenuItems,
     Message,
@@ -209,6 +210,7 @@ pub enum Prop {
     Minimum,
     MinuteIncrement,
     MinWidth,
+    MinZoomFactor,
     MonthVisible,
     NavigateUri,
     Nodes,
@@ -253,6 +255,7 @@ pub enum Prop {
     Value,
     VerticalAlignment,
     VerticalScrollBarVisibility,
+    ScrollViewerZoomMode,
     Width,
     YearVisible,
 }

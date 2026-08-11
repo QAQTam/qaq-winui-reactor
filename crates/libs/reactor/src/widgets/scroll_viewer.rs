@@ -7,6 +7,11 @@ pub struct ScrollViewer {
     pub child: Box<Element>,
     pub horizontal_scroll_bar_visibility: ScrollBarVisibility,
     pub vertical_scroll_bar_visibility: ScrollBarVisibility,
+    /// 原生缩放（ZoomMode=Enabled 时 Ctrl+滚轮 / 触摸捏合缩放）。
+    /// 值为 `ScrollViewerZoomMode`（0=Disabled, 1=Enabled）。
+    pub zoom_mode: Option<i32>,
+    pub min_zoom_factor: Option<f64>,
+    pub max_zoom_factor: Option<f64>,
 }
 impl Default for ScrollViewer {
     fn default() -> Self {
@@ -16,6 +21,9 @@ impl Default for ScrollViewer {
             child: Box::new(Element::Empty),
             horizontal_scroll_bar_visibility: ScrollBarVisibility::Disabled,
             vertical_scroll_bar_visibility: ScrollBarVisibility::Auto,
+            zoom_mode: None,
+            min_zoom_factor: None,
+            max_zoom_factor: None,
         }
     }
 }
@@ -46,6 +54,23 @@ impl ScrollViewer {
 
     pub fn vertical_scroll_bar_visibility(mut self, v: ScrollBarVisibility) -> Self {
         self.vertical_scroll_bar_visibility = v;
+        self
+    }
+
+    /// 启用/禁用原生缩放（`ScrollViewerZoomMode`：0=Disabled, 1=Enabled）。
+    /// Enabled 时 Ctrl+滚轮 / 触摸双指捏合缩放内容。
+    pub fn zoom_mode(mut self, mode: i32) -> Self {
+        self.zoom_mode = Some(mode);
+        self
+    }
+
+    pub fn min_zoom_factor(mut self, v: f64) -> Self {
+        self.min_zoom_factor = Some(v);
+        self
+    }
+
+    pub fn max_zoom_factor(mut self, v: f64) -> Self {
+        self.max_zoom_factor = Some(v);
         self
     }
 }
