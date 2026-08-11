@@ -213,6 +213,13 @@ impl<B: Backend + 'static> Reconciler<B> {
                 self.backend
                     .set_prop(tab_id, Prop::IsClosable, &PropValue::Bool(closable));
             }
+            if let Some(header) = tab.header_element.as_ref() {
+                let output = self.mount_output(header);
+                self.tree.set_header(tab_id, Some(output));
+                if let Some(header_id) = output.native {
+                    self.backend.set_header_element(tab_id, Some(header_id));
+                }
+            }
             let output = self.mount_output(&tab.content);
             self.append_output_tracked(tab_id, output);
         }));
@@ -250,7 +257,13 @@ impl<B: Backend + 'static> Reconciler<B> {
             };
             let o = &old[i];
             let n = &new[i];
-            if o.header != n.header {
+            let restore_text_header = o.header_element.is_some() && n.header_element.is_none();
+            self.update_header_element(
+                tab_id,
+                o.header_element.as_ref(),
+                n.header_element.as_ref(),
+            );
+            if o.header != n.header || restore_text_header {
                 self.backend
                     .set_prop(tab_id, Prop::Header, &PropValue::Str(n.header.clone()));
             }

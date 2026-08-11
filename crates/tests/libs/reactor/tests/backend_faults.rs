@@ -90,10 +90,11 @@ fn templated_mount_case() -> Element {
         .allow_drop(true)
         .on_reorder(|_| {})
         .selected_index(1)
+        .follow_tail(1)
         .build()
 }
 
-fn templated_mount_operations() -> [BackendOperation; 11] {
+fn templated_mount_operations() -> [BackendOperation; 14] {
     [
         BackendOperation::Create,
         BackendOperation::SetProp,
@@ -106,6 +107,9 @@ fn templated_mount_operations() -> [BackendOperation; 11] {
         BackendOperation::SetTemplatedCanReorderItems,
         BackendOperation::SetTemplatedAllowDrop,
         BackendOperation::SetTemplatedSelectedIndex,
+        BackendOperation::ConfigureTemplatedScroll,
+        BackendOperation::PrepareTemplatedScroll,
+        BackendOperation::ApplyPreparedTemplatedScroll,
     ]
 }
 

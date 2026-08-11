@@ -1,32 +1,61 @@
 # DEEPX-DOWNSTREAM — reactor fork 补丁登记
 
-本仓库是 windows-reactor 的 **durable fork**：主仓库 `F:\DeepX` 以
-`path` 依赖（开发态）/ git rev（发布态）引用，所有下游扩展以补丁形式
-提交在本 fork 历史中。本文件登记**与上游的差异**，供合并上游 / 重评
-补丁时核对。
+本仓库是 `microsoft/windows-rs` 的 DeepX durable fork。`F:\DeepX` 在开发态以
+`path` 依赖引用本仓库，发布态使用本仓库的 immutable git revision。
 
-> 登记以「本轮已核实」为准；历史补丁以 `git log --oneline` 为完整来源，
-> 下表只列登记时点仍生效的关键差异。
+## 当前基线
 
-## 当前引用
+| 项 | 值 |
+|---|---|
+| 上游 | `microsoft/windows-rs` `master` |
+| 上游基线 | `c318f55a254a4ceeca4e7a376bd22247201d83d8`（#4824，2026-08-11） |
+| 下游分支 | `deepx-winui` |
+| 补丁快照 | `42e951803`（旧 fork 的净差异重放到新基线） |
+| 消费端 | `F:\DeepX`，开发态路径 `F:\deepx-winui-reactor` |
 
-- 主仓库 `apps/winui/Cargo.toml`：
-  `windows-reactor = { path = "../../../deepx-winui-reactor/crates/libs/reactor" }`
-- fork 基线 HEAD（登记时点）：`614cf8688`
+旧 shallow fork `F:\deepx-winui-reactor-1` 仅作为迁移来源，不再作为构建、发布或
+补丁审计依据。审计下游净差异使用：
+
+```powershell
+git diff master..deepx-winui
+```
 
 ## 补丁登记表
 
-| # | 补丁 | 文件 | 说明 | 引入 commit |
-|---|------|------|------|-------------|
-| P1 | DEEPX_PERF_LOG 慢渲染日志 | `crates/libs/reactor/src/engine.rs` | 环境变量门控（`DEEPX_PERF_LOG=<path>`）；单次渲染 >3ms 时追加写一行（pid / render# / tree / reconcile / effects / diffed / skipped / created）。零依赖零分配（未设 env 时仅一次 var 查询）。用于定位持续高 CPU 的成本构成。 | `614cf8688` |
-| P2 | `set_render_observer` 每帧渲染观察者 | `crates/libs/reactor/src/engine.rs` | thread_local 全局槽，`RenderCompleteInfo`（tree/reconcile/effects ms + diff/skipped/created）每帧回调；`set_render_observer(Some/None)` 注册/注销。UI 线程专用（跨线程注册静默指向该线程槽）；回调内禁止再 set（RefCell 重入）。apps/winui `diagnostics.rs` 消费。 | `614cf8688` |
+| 组 | 能力 | 主要文件 |
+|---|---|---|
+| 引擎/诊断 | `DEEPX_PERF_LOG`、`set_render_observer`、`on_frame` | `engine.rs`、`hooks.rs`、`host.rs`、`lib.rs` |
+| 虚拟列表 | follow/force tail、锚点保持、offset 恢复、顶部阈值与 viewport 回调 | `widget.rs`、`reconciler/templated.rs`、`backend/*` |
+| RichText | 段落/run 增量 diff、run 样式、line height、text alignment | `widget.rs`、`widgets/text_block.rs`、`backend/winui/mod.rs`、bindings |
+| 修饰系统 | `Element` 链式修饰、渐变前景、translation/transition | `element.rs`、`style.rs`、`reconciler/mod.rs` |
+| WinUI 扩展 | rich flyout、Tab header element、图像与动画扩展 | `widgets/*`、`backend/winui/mod.rs` |
+| 生成绑定 | DeepX 使用的 WinUI 投影与 selftest bindings | `bindings.rs`、`reactor_selftest/src/bindings.rs`、`tools/reactor/src/base.txt` |
 
-## 备注
+## c318f55a2 融合记录
 
-- `RenderStats` / `RenderCompleteInfo` / `stats()` 为 fork 既有公开 API
-  （`engine.rs` L1105+），P2 复用同一 payload 结构。
-- fork 历史补丁（on_frame / 段落 diff / 修饰方法 / 滚动修复等）见
-  `git log --oneline --all`，主仓库侧对应文档见 `docs/reactor-winui3-knowledge.md`
-  与 `docs/windows-reactor-skill.md`。
-- 合并上游前逐条核对：P1/P2 均为**纯增量**（无行为变更），与上游
-  reconcile 路径正交。
+- 保留 #4815 的 `MountedTree` 子投影所有权；未恢复已删除的 WinUI
+  `parent_children` 镜像。
+- DeepX templated scroll 配置位于 #4822 的 mount rollback 事务内；
+  `configure`、`prepare`、`apply` 均纳入 fault injection 测试。
+- 保留 #4824 的 reconcile 失败后 teardown-only 状态机。
+- 接受 #4823 对 `CustomElement` 的删除；DeepX 消费端没有使用该 API。
+- `RecordingBackend` 保留上游 live-control/ownership 一致性模型，并将 DeepX
+  top-edge handler 纳入销毁与一致性检查。
+- `TabItem::header_element` 已接入新版 mounted header ownership；移除 rich header
+  时会先清空元素 header，再恢复文本 fallback。
+
+## 门禁
+
+```powershell
+cargo check -p windows-reactor
+cargo test -p test_reactor
+cargo test -p test_reactor_selftest
+git diff --check
+```
+
+DeepX 侧还需运行：
+
+```powershell
+cargo check -p deepx-winui
+cargo tree -p deepx-winui -d
+```
