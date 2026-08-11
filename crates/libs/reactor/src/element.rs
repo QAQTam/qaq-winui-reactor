@@ -712,9 +712,11 @@ impl<T: capability::TextStyle> TextStyleExt for T {}
 
 /// UI Automation modifiers for concrete native widgets.
 ///
-/// ```compile_fail
-/// use windows_reactor::{AccessibilityExt, Element, button};
+/// ```rust
+/// use windows_reactor::{Element, button};
 ///
+/// // DeepX downstream: `Element` itself also carries modifier convenience
+/// // methods, so chaining on a plain `Element` is supported.
 /// let element: Element = button("Save").into();
 /// let _ = element.automation_name("Save document");
 /// ```
@@ -749,9 +751,11 @@ impl<T: capability::Accessibility> AccessibilityExt for T {}
 
 /// Grid row, column, and span placement for concrete native children.
 ///
-/// ```compile_fail
-/// use windows_reactor::{Element, GridChildExt, text_block};
+/// ```rust
+/// use windows_reactor::{Element, text_block};
 ///
+/// // DeepX downstream: `Element` itself also carries modifier convenience
+/// // methods, so chaining on a plain `Element` is supported.
 /// let element: Element = text_block("Cell").into();
 /// let _ = element.grid_row(1);
 /// ```
@@ -827,10 +831,11 @@ impl<T: capability::CanvasChild> CanvasChildExt for T {}
 /// let _ = element.on_tapped(|| {});
 /// ```
 ///
-/// ```compile_fail
-/// use windows_reactor::{Element, InputExt, KeyboardAccelerator, VirtualKey, VirtualKeyModifiers,
-///     button};
+/// ```rust
+/// use windows_reactor::{Element, KeyboardAccelerator, VirtualKey, VirtualKeyModifiers, button};
 ///
+/// // DeepX downstream: `Element` itself also carries modifier convenience
+/// // methods, so chaining on a plain `Element` is supported.
 /// let element: Element = button("Save").into();
 /// let accelerator =
 ///     KeyboardAccelerator::new(VirtualKey::S, VirtualKeyModifiers::Control, || {});
