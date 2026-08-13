@@ -25,6 +25,13 @@ impl<B: Backend + 'static> Reconciler<B> {
                     self.backend.set_pane_element(id, Some(pane_id));
                 }
             }
+            if let Some(content) = w.content_element() {
+                let output = self.mount_output(content);
+                self.tree.set_content(id, Some(output));
+                if let Some(content_id) = output.native {
+                    self.backend.set_content_element(id, Some(content_id));
+                }
+            }
         }));
         if let Err(payload) = result {
             self.unmount_inner(id);
@@ -52,6 +59,7 @@ impl<B: Backend + 'static> Reconciler<B> {
         self.update_widget_children(id, old.children(), new.children());
         self.update_header_element(id, old.header_element(), new.header_element());
         self.update_pane_element(id, old.pane_element(), new.pane_element());
+        self.update_content_element(id, old.content_element(), new.content_element());
         let old_reference = element_ref(old.modifiers());
         let new_reference = element_ref(new.modifiers());
         if old_reference != new_reference {
@@ -196,6 +204,42 @@ impl<B: Backend + 'static> Reconciler<B> {
                     self.backend.set_pane_element(id, Some(pane_id));
                 }
                 self.tree.set_pane(id, Some(output));
+            }
+        }
+    }
+
+    fn update_content_element(&mut self, id: ControlId, old: Option<&Element>, new: Option<&Element>) {
+        match (old, new) {
+            (None, None) => {}
+            (None, Some(content)) => {
+                let output = self.mount_output(content);
+                if let Some(content_id) = output.native {
+                    self.backend.set_content_element(id, Some(content_id));
+                }
+                self.tree.set_content(id, Some(output));
+            }
+            (Some(_), None) => {
+                if let Some(output) = self.tree.content(id) {
+                    self.tree.set_content(id, None);
+                    self.backend.set_content_element(id, Option::<ControlId>::None);
+                    self.unmount_output(output);
+                }
+            }
+            (Some(old_el), Some(new_el)) => {
+                // Reconcile in-place when possible to preserve focus/state.
+                if let Some(old_output) = self.tree.content(id) {
+                    let new_output = self.update_output(old_el, new_el, old_output);
+                    if old_output.native != new_output.native {
+                        self.backend.set_content_element(id, new_output.native);
+                    }
+                    self.tree.set_content(id, Some(new_output));
+                    return;
+                }
+                let output = self.mount_output(new_el);
+                if let Some(content_id) = output.native {
+                    self.backend.set_content_element(id, Some(content_id));
+                }
+                self.tree.set_content(id, Some(output));
             }
         }
     }

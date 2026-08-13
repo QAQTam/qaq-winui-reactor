@@ -2169,6 +2169,57 @@ impl windows_core::RuntimeName for ContentDialogClosedEventArgs {
 unsafe impl Send for ContentDialogClosedEventArgs {}
 unsafe impl Sync for ContentDialogClosedEventArgs {}
 #[repr(transparent)]
+#[derive(Clone, PartialEq)]
+pub struct ContentDialogClosingEventArgs(windows_core::IUnknown);
+impl windows_core::RuntimeType for ContentDialogClosingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IContentDialogClosingEventArgs>();
+}
+unsafe impl windows_core::Interface for ContentDialogClosingEventArgs {
+    type Vtable = <IContentDialogClosingEventArgs as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IContentDialogClosingEventArgs as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for ContentDialogClosingEventArgs {
+    type Target = IContentDialogClosingEventArgs;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for ContentDialogClosingEventArgs {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Controls.ContentDialogClosingEventArgs";
+}
+unsafe impl Send for ContentDialogClosingEventArgs {}
+unsafe impl Sync for ContentDialogClosingEventArgs {}
+windows_core::imp::define_interface!(
+    IContentDialogClosingEventArgs,
+    IContentDialogClosingEventArgs_Vtbl,
+    0xef8e7f8e_9f6d_5c4a_8b6a_4d3c2b1a09f8
+);
+impl windows_core::RuntimeType for IContentDialogClosingEventArgs {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IContentDialogClosingEventArgs_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Cancel: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut bool,
+    ) -> windows_core::HRESULT,
+    pub SetCancel: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        bool,
+    ) -> windows_core::HRESULT,
+    pub Result: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut ContentDialogResult,
+    ) -> windows_core::HRESULT,
+    pub GetDeferral: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ContentDialogResult(pub i32);
 impl ContentDialogResult {
@@ -6941,6 +6992,36 @@ impl IContentDialog {
             ))
         }
     }
+    pub(crate) fn Closing<F>(&self, handler: F) -> windows_core::Result<windows_core::EventRevoker>
+    where
+        F: Fn(windows_core::Ref<ContentDialog>, windows_core::Ref<ContentDialogClosingEventArgs>)
+            + 'static,
+    {
+        let handler: TypedEventHandler<ContentDialog, ContentDialogClosingEventArgs> = {
+            let com = windows_core::imp::DelegateBox::<
+                TypedEventHandler<ContentDialog, ContentDialogClosingEventArgs>,
+                F,
+            >::new(
+                &TypedEventHandlerBox::<ContentDialog, ContentDialogClosingEventArgs, F>::VTABLE,
+                handler,
+            );
+            unsafe { core::mem::transmute(windows_core::imp::box_new(com)) }
+        };
+        unsafe {
+            let mut result__ = core::mem::zeroed();
+            let token__ = (windows_core::Interface::vtable(self).Closing)(
+                windows_core::Interface::as_raw(self),
+                windows_core::Interface::as_raw(&handler),
+                &mut result__,
+            )
+            .map(|| result__)?;
+            Ok(windows_core::EventRevoker::new(
+                self.clone(),
+                token__,
+                windows_core::Interface::vtable(self).RemoveClosing,
+            ))
+        }
+    }
     pub(crate) fn Hide(&self) -> windows_core::Result<()> {
         unsafe {
             (windows_core::Interface::vtable(self).Hide)(windows_core::Interface::as_raw(self)).ok()
@@ -7012,8 +7093,13 @@ pub struct IContentDialog_Vtbl {
     SetCloseButtonStyle: usize,
     DefaultButton: usize,
     SetDefaultButton: usize,
-    Closing: usize,
-    RemoveClosing: usize,
+    pub Closing: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut i64,
+    ) -> windows_core::HRESULT,
+    pub RemoveClosing:
+        unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
     pub Closed: unsafe extern "system" fn(
         *mut core::ffi::c_void,
         *mut core::ffi::c_void,

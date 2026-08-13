@@ -206,6 +206,12 @@ pub trait Widget {
     fn flyout_element(&self) -> Option<&Element> {
         None
     }
+    /// Optional element tree for a content slot (e.g. rich ContentDialog
+    /// content). Mounted as a subtree outside the host's own children and
+    /// attached via `IContentControl.put_Content`.
+    fn content_element(&self) -> Option<&Element> {
+        None
+    }
     /// Optional post-mount callback. When present, the reconciler invokes it
     /// immediately after creation with the native element (`IInspectable`), or
     /// `None` if the backend exposes no native element for the control.

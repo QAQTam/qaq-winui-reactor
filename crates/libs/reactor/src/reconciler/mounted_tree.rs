@@ -12,6 +12,7 @@ pub(super) struct MountedTree {
     nodes: FxHashMap<ControlId, MountedNativeNode>,
     headers: FxHashMap<ControlId, MountedOutput>,
     panes: FxHashMap<ControlId, MountedOutput>,
+    contents: FxHashMap<ControlId, MountedOutput>,
     before_unmount: FxHashMap<ControlId, BeforeUnmount>,
     pub(super) templated: MountedTemplatedTree,
     pub(super) logical: MountedLogicalTree,
@@ -80,6 +81,11 @@ impl MountedTree {
                 record(*parent, pane);
             }
         }
+        for (parent, content) in &self.contents {
+            if let Some(content) = content.native {
+                record(*parent, content);
+            }
+        }
         for (parent, state) in &self.templated.lists {
             for row in state.rows.values() {
                 if let Some(content_id) = row.output.native {
@@ -145,6 +151,11 @@ impl MountedTree {
             && let Some(pane) = pane.native
         {
             self.clear_parent(pane, id);
+        }
+        if let Some(content) = self.contents.remove(&id)
+            && let Some(content) = content.native
+        {
+            self.clear_parent(content, id);
         }
         self.before_unmount.remove(&id);
         if matches!(kind, Some(ControlKind::ContentDialog)) {
@@ -229,6 +240,26 @@ impl MountedTree {
 
     pub(super) fn pane(&self, parent: ControlId) -> Option<MountedOutput> {
         self.panes.get(&parent).copied()
+    }
+
+    pub(super) fn set_content(&mut self, parent: ControlId, content: Option<MountedOutput>) {
+        if let Some(old) = self.contents.remove(&parent)
+            && let Some(old) = old.native
+        {
+            self.clear_parent(old, parent);
+        }
+        if let Some(content) = content
+            && let Some(native) = content.native
+        {
+            self.set_parent(native, parent);
+            self.contents.insert(parent, content);
+        } else if let Some(content) = content {
+            self.contents.insert(parent, content);
+        }
+    }
+
+    pub(super) fn content(&self, parent: ControlId) -> Option<MountedOutput> {
+        self.contents.get(&parent).copied()
     }
 
     pub(super) fn set_before_unmount(
@@ -435,6 +466,9 @@ impl MountedTree {
         if let Some(pane) = self.pane(parent).and_then(|output| output.native) {
             children.push(pane);
         }
+        if let Some(content) = self.content(parent).and_then(|output| output.native) {
+            children.push(content);
+        }
         if let Some(state) = self.templated.lists.get(&parent) {
             children.extend(state.rows.values().filter_map(|row| row.output.native));
         }
@@ -458,6 +492,12 @@ impl MountedTree {
             logical_roots.push(logical);
         }
         if let Some(output) = self.pane(parent)
+            && output.native.is_none()
+            && let Some(logical) = output.logical
+        {
+            logical_roots.push(logical);
+        }
+        if let Some(output) = self.content(parent)
             && output.native.is_none()
             && let Some(logical) = output.logical
         {
@@ -564,6 +604,11 @@ impl MountedTree {
             && let Some(pane) = pane.native
         {
             self.clear_parent(pane, id);
+        }
+        if let Some(content) = self.contents.remove(&id)
+            && let Some(content) = content.native
+        {
+            self.clear_parent(content, id);
         }
         self.before_unmount.remove(&id);
         self.nodes.remove(&id);

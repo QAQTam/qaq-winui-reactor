@@ -481,6 +481,10 @@ pub trait Backend {
     /// Pass `None` to clear a previously set pane element.
     fn set_pane_element(&mut self, _id: ControlId, _pane_id: Option<ControlId>) {}
     fn set_flyout_content(&mut self, _id: ControlId, _content_id: Option<ControlId>) {}
+    /// Set a mounted element tree as the content of a `ContentDialog`
+    /// (rich mode; text mode uses the `Content` prop instead). Pass `None`
+    /// to clear a previously set content element.
+    fn set_content_element(&mut self, _id: ControlId, _content_id: Option<ControlId>) {}
 
     fn scroll_templated_to_index(&mut self, _id: ControlId, _index: i32) {}
 

@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -153,9 +154,37 @@ pub struct WinUIBackend {
     flyout_open_pending: RefCell<FxHashMap<ControlId, bool>>,
     /// Flyout Closed handlers that arrived before the flyout existed.
     flyout_closed_pending: RefCell<FxHashMap<ControlId, EventHandler>>,
+    /// ContentDialog 生命周期状态：关闭动画前清空内容/缩小尺寸（规避 WinUI
+    /// 关闭残影），重新打开前据此恢复。`closing_attached` 防重复挂事件。
+    /// Rc 包装：Closed 事件闭包（`attach_event`）需捕获它来复位 closing/shown。
+    dialog_state: Rc<RefCell<FxHashMap<ControlId, DialogState>>>,
+    /// 程序化关闭（✕）排队 Hide 的取消标志：IsOpen(true) 置 false 取消，
+    /// 防止「排队 Hide 期间重新打开」把新对话框关掉。
+    dialog_hide_pending: RefCell<FxHashMap<ControlId, Rc<AtomicBool>>>,
     /// Per-host window state for window-level props.
     window_state: RefCell<Option<Rc<HostWindowState>>>,
     next_id: RefCell<u32>,
+}
+
+/// ContentDialog 显示/关闭的生命周期快照。
+#[derive(Default)]
+struct DialogState {
+    /// 挂载的内容子树（`set_content_element` 记录；重新打开前恢复）。
+    content_id: Option<ControlId>,
+    /// 渲染层最近一次设置的尺寸（`set_prop` 记录；关闭动画前会缩到 1x1）。
+    width: Option<f64>,
+    height: Option<f64>,
+    /// Closing 清理事件是否已挂载（首次打开时挂一次）。
+    closing_attached: bool,
+    /// ShowAsync 已发起、对话框处于打开状态。IsOpen=false 仅在 shown 时
+    /// 进入 closing，避免 Esc 后 on_closed 补发的 IsOpen=false（对话框已关）
+    /// 误置 closing 导致下次打开被拦截。
+    shown: bool,
+    /// 关闭动画进行中（IsOpen=false 已应用、Closed 尚未触发）。此窗口内
+    /// 收到 IsOpen=true 时跳过 ShowAsync：WinUI 拒绝动画中的 ShowAsync，
+    /// 对话框会卡在「遮罩常驻、Closed 不触发」的僵死态且无法自愈。
+    /// Closed 事件复位。
+    closing: bool,
 }
 
 #[derive(Default)]
@@ -581,6 +610,8 @@ impl WinUIBackend {
             resource_keys: RefCell::new(FxHashMap::default()),
             flyout_open_pending: RefCell::new(FxHashMap::default()),
             flyout_closed_pending: RefCell::new(FxHashMap::default()),
+            dialog_state: Rc::new(RefCell::new(FxHashMap::default())),
+            dialog_hide_pending: RefCell::new(FxHashMap::default()),
             window_state: RefCell::new(None),
             next_id: RefCell::new(0),
         }
@@ -1735,6 +1766,27 @@ impl Backend for WinUIBackend {
                 return Ok(());
             }
             if try_universal_prop(handle, prop, value)? {
+                // ContentDialog 尺寸需在关闭动画后恢复（Closing 会缩到 1x1），
+                // 这里记录渲染层最近设置值，供重新打开前回写。
+                if matches!(handle, Handle::ContentDialog(_)) {
+                    match (prop, value) {
+                        (Prop::Width, PropValue::F64(v)) => {
+                            self.dialog_state
+                                .borrow_mut()
+                                .entry(id)
+                                .or_default()
+                                .width = Some(*v);
+                        }
+                        (Prop::Height, PropValue::F64(v)) => {
+                            self.dialog_state
+                                .borrow_mut()
+                                .entry(id)
+                                .or_default()
+                                .height = Some(*v);
+                        }
+                        _ => {}
+                    }
+                }
                 return Ok(());
             }
             match (prop, value, handle) {
@@ -1923,6 +1975,78 @@ impl Backend for WinUIBackend {
                 }
                 (Prop::IsOpen, PropValue::Bool(v), Handle::ContentDialog(d)) => {
                     if *v {
+                        // 关闭动画进行中（IsOpen=false 已应用、Closed 未触发）收到
+                        // 重开请求：WinUI 拒绝动画中的 ShowAsync，对话框会卡在
+                        // 「遮罩常驻、Closed 不触发」的僵死态且无法自愈。跳过本次
+                        // 重开让关闭正常走完；Closed 后 app 侧 on_closed 复位状态，
+                        // 下一次打开请求照常（代价仅是丢一次极端的快速重开）。
+                        if self
+                            .dialog_state
+                            .borrow()
+                            .get(&id)
+                            .is_some_and(|st| st.closing)
+                        {
+                            self.dialog_hide_pending.borrow_mut().remove(&id);
+                            diag::warn(format_args!(
+                                "ContentDialog {id} reopen ignored - close animation in progress"
+                            ));
+                            return Ok(());
+                        }
+                        // 取消可能排队的延迟 Hide（✕ 后快速重开）。
+                        if let Some(flag) = self.dialog_hide_pending.borrow_mut().remove(&id) {
+                            flag.store(false, Ordering::Relaxed);
+                        }
+                        // 上次关闭（Closing）把内容清空、尺寸缩到 1x1；重新
+                        // 打开前先恢复，避免 1x1 空壳弹出。
+                        if let Some(st) = self.dialog_state.borrow().get(&id) {
+                            if let (Some(w), Some(h)) = (st.width, st.height)
+                                && let Ok(fe) = d.cast::<bindings::IFrameworkElement>()
+                            {
+                                diag::dropped(fe.SetWidth(w));
+                                diag::dropped(fe.SetHeight(h));
+                            }
+                            if let Some(cid) = st.content_id
+                                && let Some(content_handle) = self.controls.borrow().get(&cid)
+                            {
+                                let ui_elem = content_handle.as_ui_element();
+                                let insp = ui_elem.cast::<windows_core::IInspectable>().ok();
+                                if let Ok(cc) = d.cast::<bindings::IContentControl>() {
+                                    diag::dropped(cc.SetContent(insp.as_ref()));
+                                }
+                            }
+                        }
+                        // 首次打开时挂 Closing 清理：动画播放前清空内容 + 缩小，
+                        // 关闭动画只剩 1x1 空壳 —— WinUI 关闭残影（面板形状阴影
+                        // 拦截输入）即由此规避。闭包零捕获（只用 sender）。
+                        if !self
+                            .dialog_state
+                            .borrow()
+                            .get(&id)
+                            .map(|s| s.closing_attached)
+                            .unwrap_or(false)
+                        {
+                            if let Ok(rev) = d.Closing(move |sender, _args| {
+                                let Some(sender) = sender.as_ref() else { return };
+                                if let Ok(cc) = sender.cast::<bindings::IContentControl>() {
+                                    diag::dropped(cc.SetContent(
+                                        None::<&windows_core::IInspectable>,
+                                    ));
+                                }
+                                if let Ok(fe) = sender.cast::<bindings::IFrameworkElement>() {
+                                    diag::dropped(fe.SetWidth(1.0));
+                                    diag::dropped(fe.SetHeight(1.0));
+                                }
+                            }) {
+                                self.dialog_state
+                                    .borrow_mut()
+                                    .entry(id)
+                                    .or_default()
+                                    .closing_attached = true;
+                                self.event_revokers
+                                    .borrow_mut()
+                                    .insert((id, Event::Closed), vec![rev]);
+                            }
+                        }
                         // ContentDialog is not in the tree, so borrow another XamlRoot.
                         let xroot = self
                             .controls
@@ -1941,6 +2065,11 @@ impl Backend for WinUIBackend {
                             Some(root) => {
                                 diag::dropped(d.cast::<bindings::IUIElement>()?.SetXamlRoot(&root));
                                 diag::dropped(d.ShowAsync());
+                                // ShowAsync 发起成功（异步，不保证弹层已可见）即记
+                                // shown：IsOpen=false 只有在 shown 时才进入 closing。
+                                if let Some(st) = self.dialog_state.borrow_mut().get_mut(&id) {
+                                    st.shown = true;
+                                }
                             }
                             None => {
                                 diag::warn(format_args!(
@@ -1950,7 +2079,53 @@ impl Backend for WinUIBackend {
                         }
                         Ok(())
                     } else {
-                        d.Hide()
+                        // 仅当对话框确实处于打开状态（ShowAsync 已发起）时进入
+                        // closing：对话框已关闭后（Esc 路径 on_closed 补发的
+                        // IsOpen=false）不置位，避免下次打开被关闭动画防护误拦。
+                        if let Some(st) = self.dialog_state.borrow_mut().get_mut(&id)
+                            && st.shown
+                        {
+                            st.shown = false;
+                            st.closing = true;
+                        }
+                        // 程序化关闭（✕）：不直接在 Click 事件栈内 Hide ——
+                        // WinUI 在 pointer/焦点事件处理中关闭承载 Popup 会留下
+                        // 视觉残留（Esc 是系统路径，不受影响）。推迟到
+                        // DispatcherQueue 下一周期（事件链完成后）再 Hide。
+                        let flag = Rc::new(AtomicBool::new(true));
+                        self.dialog_hide_pending.borrow_mut().insert(id, flag.clone());
+                        let hide_now = |d: &bindings::ContentDialog| {
+                            if flag.load(Ordering::Relaxed) {
+                                diag::dropped(d.Hide());
+                            }
+                        };
+                        match DispatcherQueue::GetForCurrentThread() {
+                            Ok(queue) => {
+                                let d2 = d.clone();
+                                let flag2 = flag.clone();
+                                let handler = DispatcherQueueHandler::new(move || {
+                                    if flag2.load(Ordering::Relaxed) {
+                                        diag::dropped(d2.Hide());
+                                    }
+                                });
+                                if queue
+                                    .TryEnqueueWithPriority(
+                                        DispatcherQueuePriority::Normal,
+                                        &handler,
+                                    )
+                                    .unwrap_or(false)
+                                {
+                                    Ok(())
+                                } else {
+                                    hide_now(d);
+                                    Ok(())
+                                }
+                            }
+                            Err(_) => {
+                                hide_now(d);
+                                Ok(())
+                            }
+                        }
                     }
                 }
                 (Prop::Value, PropValue::I32(v), Handle::InfoBadge(ib)) => {
@@ -2703,6 +2878,30 @@ impl Backend for WinUIBackend {
         }
     }
 
+    fn set_content_element(&mut self, id: ControlId, content_id: Option<ControlId>) {
+        self.dialog_state
+            .borrow_mut()
+            .entry(id)
+            .or_default()
+            .content_id = content_id;
+        let map = self.controls.borrow();
+        let Some(handle) = map.get(&id) else { return };
+        let Handle::ContentDialog(d) = handle else { return };
+        let Some(cc) = d.cast::<bindings::IContentControl>().ok() else {
+            return;
+        };
+        if let Some(cid) = content_id {
+            let Some(content_handle) = map.get(&cid) else {
+                return;
+            };
+            let ui_elem = content_handle.as_ui_element();
+            let insp = ui_elem.cast::<windows_core::IInspectable>().ok();
+            diag::dropped(cc.SetContent(insp.as_ref()));
+        } else {
+            diag::dropped(cc.SetContent(None::<&windows_core::IInspectable>));
+        }
+    }
+
     fn scroll_templated_to_index(&mut self, id: ControlId, index: i32) {
         if index < 0 {
             return;
@@ -2977,6 +3176,8 @@ impl Backend for WinUIBackend {
             diag::dropped(handle.as_ui_element().ReleasePointerCaptures());
         }
         self.drag_revokers.borrow_mut().remove(&id);
+        self.dialog_state.borrow_mut().remove(&id);
+        self.dialog_hide_pending.borrow_mut().remove(&id);
         self.controls.borrow_mut().remove(&id);
         self.event_revokers
             .borrow_mut()
@@ -3037,8 +3238,15 @@ impl Backend for WinUIBackend {
                 }
             }
             (Event::Closed, Handle::ContentDialog(d)) => {
+                // 复位 shown/closing：对话框已真正关闭，后续 IsOpen=true 不再被
+                // 「关闭动画进行中」防护拦截（dialogs 常驻复用，状态必须回收）。
+                let dialog_state = self.dialog_state.clone();
                 revokers.push(
                     d.Closed(move |_sender, args| {
+                        if let Some(st) = dialog_state.borrow_mut().get_mut(&id) {
+                            st.shown = false;
+                            st.closing = false;
+                        }
                         let result = args
                             .as_ref()
                             .and_then(|a| a.Result().ok())
