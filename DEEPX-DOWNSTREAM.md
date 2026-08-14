@@ -29,6 +29,7 @@ git diff master..deepx-winui
 | RichText | 段落/run 增量 diff、run 样式、line height、text alignment | `widget.rs`、`widgets/text_block.rs`、`backend/winui/mod.rs`、bindings |
 | 修饰系统 | `Element` 链式修饰、渐变前景、translation/transition | `element.rs`、`style.rs`、`reconciler/mod.rs` |
 | WinUI 扩展 | rich flyout、Tab header element、图像与动画扩展 | `widgets/*`、`backend/winui/mod.rs` |
+| ScrollViewer 滚动命令 | `scroll_to_bottom(generation)` 声明式滚动到底（ChangeView）；思考链路流式追底用 | `widgets/scroll_viewer.rs`、`generated.rs`、`backend/mod.rs`、`backend/winui/generated_set_prop.rs` |
 | 生成绑定 | DeepX 使用的 WinUI 投影与 selftest bindings | `bindings.rs`、`reactor_selftest/src/bindings.rs`、`tools/reactor/src/base.txt` |
 
 ## c318f55a2 融合记录
