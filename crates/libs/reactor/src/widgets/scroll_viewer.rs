@@ -12,6 +12,11 @@ pub struct ScrollViewer {
     pub zoom_mode: Option<i32>,
     pub min_zoom_factor: Option<f64>,
     pub max_zoom_factor: Option<f64>,
+    /// 滚动到底部请求（generation：应用层递增触发 reconcile diff）。
+    /// backend 在 set_prop 时调用 `ChangeView(ScrollableHeight)`；
+    /// 与 list_view 的 Tail 语义一致（reconcile 先于 layout，最终位置
+    /// 由下一次 delta 或 sealed 后的补充请求修正）。
+    pub scroll_to_bottom: Option<i32>,
 }
 impl Default for ScrollViewer {
     fn default() -> Self {
@@ -24,6 +29,7 @@ impl Default for ScrollViewer {
             zoom_mode: None,
             min_zoom_factor: None,
             max_zoom_factor: None,
+            scroll_to_bottom: None,
         }
     }
 }
@@ -61,6 +67,13 @@ impl ScrollViewer {
     /// Enabled 时 Ctrl+滚轮 / 触摸双指捏合缩放内容。
     pub fn zoom_mode(mut self, mode: i32) -> Self {
         self.zoom_mode = Some(mode);
+        self
+    }
+
+    /// 请求滚动到底部（generation 递增触发 reconcile diff）。
+    /// 典型用法：流式内容增长时 `scroll_to_bottom(gen + 1)`。
+    pub fn scroll_to_bottom(mut self, generation: i32) -> Self {
+        self.scroll_to_bottom = Some(generation);
         self
     }
 

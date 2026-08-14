@@ -523,6 +523,13 @@ pub fn dispatch(handle: &Handle, prop: Prop, value: &PropValue) -> Result<bool> 
         (Prop::ScrollViewerZoomMode, PropValue::I32(v), Handle::ScrollViewer(h)) => {
             h.SetZoomMode(bindings::ScrollViewerZoomMode(*v))?;
         }
+        // DeepX patch: 滚动到底部（generation 触发；目标 = 当前 ScrollableHeight）。
+        // 与 templated list 的 Tail 请求共享语义：reconcile 先于 layout，
+        // 若 ScrollableHeight 尚未更新则本次滚动滞后一帧，由下一次请求修正。
+        (Prop::ScrollToBottom, PropValue::I32(_), Handle::ScrollViewer(h)) => {
+            let target = h.ScrollableHeight()?;
+            h.ChangeViewWithOptionalAnimation(None, Some(target), None, true)?;
+        }
         (Prop::MinZoomFactor, PropValue::F64(v), Handle::ScrollViewer(h)) => {
             h.SetMinZoomFactor(*v)?;
         }

@@ -255,6 +255,7 @@ pub enum Prop {
     Value,
     VerticalAlignment,
     VerticalScrollBarVisibility,
+    ScrollToBottom,
     ScrollViewerZoomMode,
     Width,
     YearVisible,

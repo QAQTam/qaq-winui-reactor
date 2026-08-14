@@ -664,6 +664,9 @@ pub fn scroll_viewer_bindings(w: &ScrollViewer) -> PropBindings {
     if let Some(v) = w.max_zoom_factor {
         out.push(Binding::Prop(Prop::MaxZoomFactor, PropValue::F64(v)));
     }
+    if let Some(v) = w.scroll_to_bottom {
+        out.push(Binding::Prop(Prop::ScrollToBottom, PropValue::I32(v)));
+    }
     out
 }
 pub fn selector_bar_bindings(w: &SelectorBar) -> PropBindings {
