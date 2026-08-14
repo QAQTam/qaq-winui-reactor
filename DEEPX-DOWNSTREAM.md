@@ -44,6 +44,23 @@ git diff master..deepx-winui
 - `TabItem::header_element` 已接入新版 mounted header ownership；移除 rich header
   时会先清空元素 header，再恢复文本 fallback。
 
+## 2.0 等待期决策（2026-08-15）
+
+- 决策：不追 1.x master（已冻结）、不提前迁 2.0（仍在 phase 2 review）、
+  不在 1.x 上新增补丁；守住当前基线（`c318f55a`）等待 `reactor2` 定型。
+- 发令枪信号（任一出现即重新评估）：
+  1. `reactor2-phase2-review` 合回 master；
+  2. #4835（Windows App SDK 2.4.0 适配）合并；
+  3. windows-rs 下一个 release（74）。
+- 2.0 验收清单（迁移前对照本表逐项验证）：
+  1. VirtualList/VirtualGrid 是否覆盖 follow/force tail、锚点保持、
+     offset 恢复、顶部阈值与 viewport 回调；
+  2. 文本是否有增量段落模型（RichText 流式 delta 不整体重建）；
+  3. `performance` API 是否覆盖 `set_render_observer`/`on_frame` 等价能力；
+  4. 修饰系统：渐变前景、translation/transition；
+  5. DeepX 在用控件覆盖：ContentDialog/TeachingTip/MenuFlyout/Tab 布局。
+- 若 RichText 增量或聊天滚动语义缺失 → 暂缓迁移，或在 2.0 上重写对应补丁。
+
 ## 门禁
 
 ```powershell
